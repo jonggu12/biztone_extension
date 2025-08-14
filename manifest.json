@@ -1,0 +1,63 @@
+{
+  "manifest_version": 3,
+  "name": "BizTone - 감정문장 비즈니스 변환기",
+  "version": "1.0.0",
+  "description": "드래그한 문장을 정중한 비즈니스 문장으로 변환합니다.",
+  "permissions": [
+    "contextMenus",
+    "activeTab",
+    "storage",
+    "scripting",
+    "clipboardWrite"
+  ],
+  "host_permissions": [
+    "https://api.openai.com/*"
+  ],
+  "background": {
+    "service_worker": "background.js"
+  },
+  "action": {
+    "default_popup": "popup.html",
+    "default_icon": {
+      "16": "icons/icon16.png",
+      "48": "icons/icon48.png",
+      "128": "icons/icon128.png"
+    }
+  },
+  "icons": {
+    "16": "icons/icon16.png",
+    "48": "icons/icon48.png",
+    "128": "icons/icon128.png"
+  },
+  "options_page": "options.html",
+  "content_scripts": [
+    {
+      "matches": [
+        "<all_urls>"
+      ],
+      "js": [
+        "contentScript.js"
+      ],
+      "css": [
+        "styles.css"
+      ],
+      "all_frames": true,
+      "run_at": "document_idle"
+    }
+  ],
+  "commands": {
+    "convert-selection": {                       
+      "suggested_key": {                         
+        "default": "Ctrl+Shift+Y",
+        "mac": "Command+Shift+Y"
+      },
+      "description": "Convert selected text to business tone and replace in place"
+    }
+  },
+  "web_accessible_resources": [
+    {
+      "resources": ["data/fword_list.txt"],
+      "matches": ["<all_urls>"]
+    }
+  ]
+}

@@ -1,0 +1,45 @@
+<!doctype html>
+<html lang="ko">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>BizTone 설정</title>
+  <style>
+    body { max-width: 720px; margin: 0 auto; padding: 24px; font-family: ui-sans-serif, system-ui, -apple-system, Segoe UI, Roboto, 'Noto Sans KR', Arial; color: #0b1220; }
+    .card { border:1px solid #e5e7eb; border-radius:12px; padding:16px; box-shadow: 0 4px 16px rgba(0,0,0,.03); }
+    label { display:block; font-weight:700; margin-bottom:6px; }
+    input, select { width:100%; padding:10px; border:1px solid #d1d5db; border-radius:8px; }
+    .row { display:flex; gap:12px; margin-top:10px; }
+    button { padding:10px 14px; border-radius:8px; border:1px solid #1f2937; background:#111827; color:#fff; cursor:pointer; }
+    .muted { color:#6b7280; font-size: 14px; }
+  </style>
+</head>
+<body>
+  <h1>BizTone 설정</h1>
+  <div class="card">
+    <label for="apiKey">OpenAI API Key</label>
+    <input id="apiKey" type="password" placeholder="sk-..." autocomplete="off" />
+    <div class="muted">키는 로컬 동기화 저장소(chrome.storage.sync)에 암호화 없이 저장됩니다. 보안에 유의하세요.</div>
+
+    <div class="row">
+      <div style="flex:1">
+        <label for="model">Model</label>
+        <select id="model">
+          <option value="gpt-4o-mini" selected>gpt-4o-mini</option>
+          <option value="gpt-4o">gpt-4o</option>
+          <option value="gpt-3.5-turbo">gpt-3.5-turbo</option>
+        </select>
+      </div>
+      <div style="flex:1">
+        <label>&nbsp;</label>
+        <button id="save">저장</button>
+        <button id="validate">검증</button>
+      </div>
+    </div>
+  </div>
+
+  <div id="status" class="muted" style="margin-top:10px;"></div>
+
+  <script src="options.js"></script>
+</body>
+</html>
