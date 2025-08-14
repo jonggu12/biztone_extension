@@ -11,10 +11,10 @@
   // ==================== CONSTANTS & CONFIGURATION ====================
 
   const CONFIG = {
-    // Prefilter thresholds
+    // Prefilter thresholds - Made more sensitive for testing
     PREFILTER: {
       PASS_MAX: 1,     // Score ≤ 1: allow immediate send
-      CONVERT_MIN: 4   // Score ≥ 4: direct conversion (skip decision prompt)
+      CONVERT_MIN: 2   // Score ≥ 2: direct conversion (more sensitive for testing)
     },
     
     // Cache settings
@@ -24,6 +24,7 @@
     
     // Guard settings
     GUARD: {
+      ENABLED: true,               // Master guard enable/disable
       PROMPT_ENABLED: true,
       AUTO_SEND_CONVERTED: false,
       FAIL_OPEN_ON_CONVERT_ERROR: false, // Security: don't auto-send on conversion failure
@@ -227,9 +228,9 @@
 
     let score = 0;
 
-    // 1) Profanity/offensive language
+    // 1) Profanity/offensive language - Increased score for better detection
     if (profanityRegex.test(text)) {
-      score += 2;
+      score += 3; // Increased from 2 to 3 for more sensitive detection
       console.debug("[BizTone] Profanity detected:", text, "Score:", score);
     }
 
@@ -728,11 +729,19 @@
     const isEnter = isEnterKey(event) && !event.shiftKey && !event.altKey;
     const isCmdEnter = isEnterKey(event) && (event.metaKey || event.ctrlKey);
     if (!isEnter && !isCmdEnter) return;
+    
+    console.debug("[BizTone] Enter key detected:", { isEnter, isCmdEnter, key: event.key, code: event.code });
 
     // Prevent duplicate processing
     if (shouldSkipDuplicate()) return;
 
     try {
+      // Check if guard is enabled
+      if (!CONFIG.GUARD.ENABLED) {
+        console.debug("[BizTone] Guard disabled in config");
+        return;
+      }
+      
       // If extension context is invalid, disable guard and allow normal operation
       if (!isExtensionContextValid()) {
         console.warn("[BizTone] Extension context invalid - guard disabled");
@@ -742,7 +751,12 @@
       // Get current text context
       const textContext = getCurrentTextContext();
       const normalizedText = normalizeText(textContext.text);
-      if (!normalizedText) return; // Allow empty sends
+      console.debug("[BizTone] Text context:", { mode: textContext.mode, text: normalizedText, element: textContext.element?.tagName });
+      
+      if (!normalizedText) {
+        console.debug("[BizTone] Empty text, allowing send");
+        return; // Allow empty sends
+      }
 
       // Check cache first
       const cachedResult = getCachedResult(normalizedText);

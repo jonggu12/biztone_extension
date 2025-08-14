@@ -618,7 +618,7 @@ async function convertToBusinessTone(text, model, apiKey) {
 
   const userPrompt = `다음 문장을 비즈니스 톤으로 변환하되, 변환된 문장만 출력하세요:
 
-"""${text}"""
+${text}
 
 변환된 문장:`;
 
@@ -660,7 +660,7 @@ async function decideTextAction(text, model, apiKey) {
 - convert일 때만 converted_text에 정중하고 간결(한국 비즈니스 톤, ~150자)하게 변환한 결과를 넣어라.
 - rationale은 1줄 한국어로 아주 간단히.
 
-문장: """${text}"""`;
+문장: ${text}`;
 
   const requestBody = {
     model: model || CONFIG.DEFAULT_MODEL,

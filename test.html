@@ -1,0 +1,179 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>BizTone Guard Test</title>
+    <style>
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+            max-width: 800px;
+            margin: 50px auto;
+            padding: 20px;
+            background: #f5f5f5;
+        }
+        .test-container {
+            background: white;
+            padding: 30px;
+            border-radius: 12px;
+            box-shadow: 0 2px 10px rgba(0,0,0,0.1);
+            margin-bottom: 20px;
+        }
+        .input-group {
+            margin-bottom: 20px;
+        }
+        label {
+            display: block;
+            margin-bottom: 8px;
+            font-weight: 600;
+            color: #333;
+        }
+        input, textarea {
+            width: 100%;
+            padding: 12px;
+            border: 2px solid #e0e0e0;
+            border-radius: 8px;
+            font-size: 14px;
+            transition: border-color 0.3s;
+        }
+        input:focus, textarea:focus {
+            outline: none;
+            border-color: #007AFF;
+        }
+        .test-samples {
+            margin-top: 20px;
+        }
+        .sample-item {
+            background: #f8f9fa;
+            padding: 10px 15px;
+            margin: 5px 0;
+            border-radius: 6px;
+            font-family: monospace;
+            font-size: 13px;
+            cursor: pointer;
+            transition: background-color 0.2s;
+        }
+        .sample-item:hover {
+            background: #e9ecef;
+        }
+        .sample-item.safe { border-left: 4px solid #28a745; }
+        .sample-item.risk { border-left: 4px solid #dc3545; }
+        .sample-item.medium { border-left: 4px solid #ffc107; }
+        
+        .instructions {
+            background: #e7f3ff;
+            padding: 15px;
+            border-radius: 8px;
+            margin-bottom: 20px;
+        }
+        
+        .debug-info {
+            background: #2d3748;
+            color: #e2e8f0;
+            padding: 15px;
+            border-radius: 8px;
+            font-family: monospace;
+            font-size: 12px;
+            margin-top: 20px;
+            white-space: pre-wrap;
+        }
+    </style>
+</head>
+<body>
+    <h1>🛡️ BizTone Guard System Test</h1>
+    
+    <div class="instructions">
+        <h3>테스트 방법:</h3>
+        <p>1. 아래 입력창에 메시지를 입력하고 <strong>Enter</strong>를 누르세요</p>
+        <p>2. 브라우저 개발자 도구 콘솔을 열어 디버그 로그를 확인하세요 (F12)</p>
+        <p>3. 위험한 메시지는 자동으로 차단되거나 변환되어야 합니다</p>
+    </div>
+
+    <div class="test-container">
+        <h3>📝 메신저 테스트 (Input)</h3>
+        <div class="input-group">
+            <label for="messenger-input">메신저 입력창 시뮬레이션:</label>
+            <input type="text" id="messenger-input" placeholder="메시지를 입력하고 Enter를 누르세요..." />
+        </div>
+    </div>
+
+    <div class="test-container">
+        <h3>📧 이메일 테스트 (Textarea)</h3>
+        <div class="input-group">
+            <label for="email-textarea">이메일 본문 시뮬레이션:</label>
+            <textarea id="email-textarea" rows="4" placeholder="이메일 내용을 입력하고 Enter를 누르세요..."></textarea>
+        </div>
+    </div>
+
+    <div class="test-container">
+        <h3>💬 채팅 테스트 (ContentEditable)</h3>
+        <div class="input-group">
+            <label for="chat-editable">채팅창 시뮬레이션:</label>
+            <div id="chat-editable" contenteditable="true" 
+                 style="min-height: 100px; border: 2px solid #e0e0e0; padding: 12px; border-radius: 8px;"
+                 placeholder="채팅 메시지를 입력하고 Enter를 누르세요...">
+            </div>
+        </div>
+    </div>
+
+    <div class="test-container">
+        <h3>🧪 테스트 샘플</h3>
+        <p>아래 샘플을 클릭하면 입력창에 자동으로 입력됩니다:</p>
+        
+        <div class="test-samples">
+            <div class="sample-item safe" onclick="fillInput(this.textContent)">안녕하세요, 잘 부탁드립니다.</div>
+            <div class="sample-item safe" onclick="fillInput(this.textContent)">회의 시간을 확인해 주세요.</div>
+            <div class="sample-item safe" onclick="fillInput(this.textContent)">시발점에서 만나요.</div>
+            
+            <div class="sample-item medium" onclick="fillInput(this.textContent)">빨리 처리해 주세요!</div>
+            <div class="sample-item medium" onclick="fillInput(this.textContent)">왜 이렇게 늦어요?</div>
+            
+            <div class="sample-item risk" onclick="fillInput(this.textContent)">씨발 이거 뭐야</div>
+            <div class="sample-item risk" onclick="fillInput(this.textContent)">미친놈아 제대로 해</div>
+            <div class="sample-item risk" onclick="fillInput(this.textContent)">개똥같은 일정</div>
+        </div>
+    </div>
+
+    <div class="debug-info" id="debug-log">
+        콘솔 디버그 로그가 여기에 표시됩니다...
+        브라우저 개발자 도구(F12) → Console 탭을 확인하세요.
+    </div>
+
+    <script>
+        // Capture console.debug for display
+        const debugEl = document.getElementById('debug-log');
+        const originalConsoleDebug = console.debug;
+        console.debug = function(...args) {
+            originalConsoleDebug.apply(console, arguments);
+            debugEl.textContent += new Date().toLocaleTimeString() + ': ' + args.join(' ') + '\n';
+            debugEl.scrollTop = debugEl.scrollHeight;
+        };
+
+        function fillInput(text) {
+            const input = document.getElementById('messenger-input');
+            input.value = text;
+            input.focus();
+        }
+
+        // Add placeholder support for contenteditable
+        const editableEl = document.getElementById('chat-editable');
+        editableEl.addEventListener('focus', function() {
+            if (this.textContent.trim() === '') {
+                this.textContent = '';
+            }
+        });
+
+        editableEl.addEventListener('blur', function() {
+            if (this.textContent.trim() === '') {
+                this.innerHTML = '<span style="color: #999;">채팅 메시지를 입력하고 Enter를 누르세요...</span>';
+            }
+        });
+
+        // Initialize placeholder
+        editableEl.innerHTML = '<span style="color: #999;">채팅 메시지를 입력하고 Enter를 누르세요...</span>';
+
+        console.log('🛡️ BizTone Guard Test Page Loaded');
+        console.debug('[Test] Extension should inject contentScript.js and start monitoring Enter keys');
+    </script>
+</body>
+</html>
