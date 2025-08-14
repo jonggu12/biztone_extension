@@ -933,7 +933,7 @@
           break;
 
         case MESSAGE_TYPES.BIZTONE_REPLACE_WITH:
-          // Update current context for hotkey usage
+          // Direct replacement from keyboard shortcut - no UI needed
           const activeElement = document.activeElement;
           lastActiveElement = activeElement || null;
           
@@ -956,7 +956,19 @@
             }
           }
           
-          replaceSelectedText(message.text || "");
+          const replaced = replaceSelectedText(message.text || "");
+          if (replaced) {
+            // Show brief success toast instead of bubble
+            showToast("변환 완료");
+          } else {
+            // Fallback to clipboard
+            try {
+              navigator.clipboard.writeText(message.text || "");
+              showToast("클립보드에 복사됨");
+            } catch (error) {
+              showToast("변환 실패");
+            }
+          }
           break;
 
         case MESSAGE_TYPES.BIZTONE_ERROR:

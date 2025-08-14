@@ -606,16 +606,21 @@ async function callOpenAI(requestBody, apiKey) {
 async function convertToBusinessTone(text, model, apiKey) {
   const systemPrompt = `너는 한국 직장 문화에 익숙한 '비즈니스 커뮤니케이션 전문가'다.
 역할: 입력된 문장을 정중하고 전문적인 비즈니스 톤으로 변환한다.
+
+규칙:
 - 감정적 표현을 중립적이고 객관적으로 변경
 - 명령형을 정중한 요청형으로 변경  
 - 비속어나 부적절한 표현을 적절한 비즈니스 용어로 대체
 - 한국어 존댓말과 비즈니스 매너를 반영
 - 원문의 핵심 의미는 유지하되 톤만 개선
-- 결과는 간결하고 명확하게 (150자 내외)`;
 
-  const userPrompt = `다음 문장을 정중한 비즈니스 톤으로 변환해 주세요:
+중요: 변환된 문장만 출력하고, "변경하겠습니다", "로 수정합니다" 등의 설명은 절대 포함하지 마세요.`;
 
-"""${text}"""`;
+  const userPrompt = `다음 문장을 비즈니스 톤으로 변환하되, 변환된 문장만 출력하세요:
+
+"""${text}"""
+
+변환된 문장:`;
 
   const requestBody = {
     model: model || CONFIG.DEFAULT_MODEL,
