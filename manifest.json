@@ -8,7 +8,8 @@
     "activeTab",
     "storage",
     "scripting",
-    "clipboardWrite"
+    "clipboardWrite",
+    "tabs"
   ],
   "host_permissions": [
     "https://api.openai.com/*"
@@ -56,7 +57,7 @@
   },
   "web_accessible_resources": [
     {
-      "resources": ["data/fword_list.txt"],
+      "resources": ["data/fword_list.txt", "data/fword_categories.json"],
       "matches": ["<all_urls>"]
     }
   ]

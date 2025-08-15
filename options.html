@@ -12,10 +12,54 @@
     .row { display:flex; gap:12px; margin-top:10px; }
     button { padding:10px 14px; border-radius:8px; border:1px solid #1f2937; background:#111827; color:#fff; cursor:pointer; }
     .muted { color:#6b7280; font-size: 14px; }
+    .banner { background: linear-gradient(135deg, #f0f9ff, #e0f2fe); border: 1px solid #0ea5e9; margin-bottom: 24px; }
+    .banner-content { display: flex; gap: 16px; align-items: flex-start; }
+    .banner-icon { font-size: 24px; margin-top: 4px; flex-shrink: 0; }
+    .banner-text { flex: 1; }
+    .banner-title { font-weight: 600; color: #0369a1; margin: 0 0 8px 0; }
+    .banner-desc { font-size: 14px; color: #075985; line-height: 1.5; margin: 0 0 16px 0; }
+    .banner-tips { font-size: 13px; color: #0c4a6e; background: rgba(255,255,255,0.6); padding: 8px 12px; border-radius: 6px; margin: 8px 0; }
+    .banner-buttons { display: flex; gap: 8px; flex-wrap: wrap; }
+    .btn-primary { background: #0ea5e9; color: white; border: 1px solid #0ea5e9; }
+    .btn-secondary { background: white; color: #0369a1; border: 1px solid #0ea5e9; }
+    .btn-tertiary { background: #10b981; color: white; border: 1px solid #10b981; }
+    .banner-buttons button { padding: 8px 14px; font-size: 13px; font-weight: 500; }
+    @media (max-width: 600px) {
+      .banner-content { flex-direction: column; gap: 12px; }
+      .banner-buttons { justify-content: flex-start; }
+      .banner-buttons button { flex: 1; min-width: 140px; }
+    }
   </style>
 </head>
 <body>
   <h1>BizTone 설정</h1>
+  
+  <!-- API Key 안내 배너 -->
+  <div class="card banner" id="apiKeyBanner">
+    <div class="banner-content">
+      <div class="banner-icon">🔑</div>
+      <div class="banner-text">
+        <h3 class="banner-title">OpenAI API Key 설정 가이드</h3>
+        <p class="banner-desc">
+          BizTone을 사용하려면 OpenAI API Key가 필요합니다. 아래 단계를 따라 키를 발급받고 설정해주세요.
+        </p>
+        <div class="banner-tips">
+          💡 <strong>팁:</strong> API 키는 "sk-"로 시작하며, 사용한 만큼만 과금됩니다. 조직에서 사용시 프록시 서버 경유를 권장합니다.
+        </div>
+        <div class="banner-buttons">
+          <button type="button" class="btn-primary" id="openDashboard">
+            🌐 OpenAI 대시보드 열기
+          </button>
+          <button type="button" class="btn-secondary" id="openGuide">
+            📖 키 발급 가이드
+          </button>
+          <button type="button" class="btn-tertiary" id="validateFromBanner">
+            ✅ 바로 검증하기
+          </button>
+        </div>
+      </div>
+    </div>
+  </div>
   <div class="card">
     <label for="apiKey">OpenAI API Key</label>
     <input id="apiKey" type="password" placeholder="sk-..." autocomplete="off" />
@@ -39,6 +83,42 @@
   </div>
 
   <div id="status" class="muted" style="margin-top:10px;"></div>
+
+  <!-- 가드 모드 설정 섹션 -->
+  <div class="card" style="margin-top: 20px;">
+    <h3>욕설 감지 모드</h3>
+    <p class="muted">감정적인 표현이나 욕설이 감지되었을 때의 동작 방식을 선택하세요.</p>
+    
+    <div style="margin: 15px 0;">
+      <label for="guardMode">감지 시 동작</label>
+      <select id="guardMode">
+        <option value="warn" selected>경고 모드 - 알림 후 사용자 선택 (권장)</option>
+        <option value="convert">자동변환 모드 - 즉시 비즈니스 문장으로 변환</option>
+      </select>
+      <div class="muted" style="margin-top: 6px;">
+        • <strong>자동변환:</strong> 감지 즉시 변환하여 교체 (기존 방식)<br>
+        • <strong>경고:</strong> 알림만 표시하고 다시 Enter 시 원문 그대로 전송
+      </div>
+    </div>
+  </div>
+
+  <!-- 도메인 관리 섹션 -->
+  <div class="card" style="margin-top: 20px;">
+    <h3>도메인별 설정</h3>
+    <p class="muted">특정 사이트에서 BizTone을 비활성화하거나 일시중지할 수 있습니다.</p>
+    
+    <div style="margin: 15px 0;">
+      <label for="domainInput">도메인 추가</label>
+      <div class="row">
+        <input id="domainInput" type="text" placeholder="예: slack.com" style="flex: 1;" />
+        <button id="addDomain">추가</button>
+      </div>
+    </div>
+    
+    <div id="domainList">
+      <!-- 도메인 목록이 여기에 동적 생성됩니다 -->
+    </div>
+  </div>
 
   <script src="options.js"></script>
 </body>

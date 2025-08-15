@@ -23,6 +23,33 @@
 
     <hr style="border-color: rgba(255,255,255,.08); margin: 10px 0;">
 
+    <!-- 도메인 컨트롤 섹션 -->
+    <div id="domainSection">
+      <div class="muted">현재 사이트</div>
+      <div id="domainInfo" style="font-size: 13px; margin: 6px 0; color: #cfe1ff;">
+        <span id="currentDomain">로딩 중...</span>
+        <span id="domainStatus" style="margin-left: 8px; font-size: 11px; opacity: 0.8;"></span>
+      </div>
+      <div class="row">
+        <button id="toggleDomain" style="flex: 1;">
+          <span id="toggleText">로딩 중...</span>
+        </button>
+        <button id="pauseOptions" style="flex: 0 0 auto; padding: 6px 8px;">⏸️</button>
+      </div>
+      
+      <!-- 일시중지 옵션 (기본 숨김) -->
+      <div id="pauseMenu" style="display: none; margin-top: 8px; background: #0f182b; border: 1px solid rgba(255,255,255,.12); border-radius: 8px; padding: 8px;">
+        <div style="font-size: 11px; margin-bottom: 6px; opacity: 0.8;">일시중지 시간 선택</div>
+        <div class="row">
+          <button class="pause-btn" data-minutes="15">15분</button>
+          <button class="pause-btn" data-minutes="30">30분</button>
+          <button class="pause-btn" data-minutes="60">1시간</button>
+        </div>
+      </div>
+    </div>
+
+    <hr style="border-color: rgba(255,255,255,.08); margin: 10px 0;">
+
     <div class="muted">빠른 테스트</div>
     <textarea id="testInput" placeholder="예) 이 미친 클라이언트가..."></textarea>
     <div class="row">

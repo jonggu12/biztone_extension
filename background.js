@@ -7,7 +7,7 @@
 
 const CONFIG = {
   MENU_ID: "biztone-convert",
-  DEBUG: false,
+  DEBUG: true,
   DEBOUNCE_MS: 400,
   DEFAULT_MODEL: "gpt-4o-mini",
   OPENAI_API_URL: "https://api.openai.com/v1/chat/completions"
@@ -23,7 +23,17 @@ const MESSAGE_TYPES = {
   BIZTONE_GUARD_DECIDE: "BIZTONE_GUARD_DECIDE",
   BIZTONE_CONVERT_TEXT: "BIZTONE_CONVERT_TEXT",
   BIZTONE_ADVANCED_RISK: "BIZTONE_ADVANCED_RISK",
-  OPEN_OPTIONS: "OPEN_OPTIONS"
+  OPEN_OPTIONS: "OPEN_OPTIONS",
+  // Guard mode settings
+  BIZTONE_GET_GUARD_MODE: "BIZTONE_GET_GUARD_MODE",
+  BIZTONE_GUARD_WARNING: "BIZTONE_GUARD_WARNING",
+  // Domain management
+  BIZTONE_GET_DOMAIN_STATUS: "BIZTONE_GET_DOMAIN_STATUS",
+  BIZTONE_TOGGLE_DOMAIN: "BIZTONE_TOGGLE_DOMAIN",
+  BIZTONE_PAUSE_DOMAIN: "BIZTONE_PAUSE_DOMAIN",
+  BIZTONE_GET_DOMAIN_RULES: "BIZTONE_GET_DOMAIN_RULES",
+  BIZTONE_SET_DOMAIN_RULE: "BIZTONE_SET_DOMAIN_RULE",
+  BIZTONE_REMOVE_DOMAIN_RULE: "BIZTONE_REMOVE_DOMAIN_RULE"
 };
 
 const ERROR_MESSAGES = {
@@ -37,6 +47,9 @@ const ERROR_MESSAGES = {
 let debounceTimestamp = 0;
 let compiledPatterns = null;
 let patternCompilationPromise = null;
+let guardModeSettings = {
+  GUARD_MODE: "warn" // Default: warn mode (recommended)
+};
 
 // ==================== UTILITY FUNCTIONS ====================
 
@@ -47,7 +60,7 @@ let patternCompilationPromise = null;
  */
 function debugLog(context, ...args) {
   if (CONFIG.DEBUG) {
-    console.debug(`[BizTone ${context}]:`, ...args);
+    console.log(`[BizTone ${context}]:`, ...args);
   }
 }
 
@@ -75,6 +88,28 @@ function createSuccessResponse(result) {
     ok: true,
     result
   };
+}
+
+/**
+ * Loads guard mode settings from storage
+ */
+async function loadGuardModeSettings() {
+  try {
+    const result = await chrome.storage.sync.get(['GUARD_MODE']);
+    guardModeSettings.GUARD_MODE = result.GUARD_MODE || "warn";
+    debugLog("Settings", "Guard mode loaded:", guardModeSettings.GUARD_MODE);
+  } catch (error) {
+    debugLog("Settings", "Failed to load guard mode settings:", error);
+    guardModeSettings.GUARD_MODE = "warn"; // Fallback to default
+  }
+}
+
+/**
+ * Gets current guard mode setting
+ * @returns {string} "convert" or "warn"
+ */
+function getGuardMode() {
+  return guardModeSettings.GUARD_MODE || "convert";
 }
 
 // ==================== ADVANCED PROFANITY FILTERING SYSTEM ====================
@@ -130,7 +165,41 @@ function extractKoreanSkeleton(text) {
 }
 
 /**
- * Generate noise-tolerant regex pattern
+ * Generate categorized noise-tolerant regex pattern
+ */
+function generateCategorizedPattern(item) {
+  const normalized = normalizeKoreanText(item.word);
+  const skeleton = extractKoreanSkeleton(normalized);
+  
+  // Enhanced noise pattern with broader Unicode categories
+  const noise = '[\\p{Z}\\p{P}\\p{S}\\u200B-\\u200F\\u202A-\\u202E\\u2060\\uFEFF]*';
+  
+  // Create pattern with noise tolerance
+  const noisyPattern = normalized
+    .split('')
+    .map(char => escapeRegex(char))
+    .join(noise);
+    
+  // Also create skeleton pattern for advanced detection
+  const skeletonPattern = skeleton
+    .split('')
+    .map(char => escapeRegex(char))
+    .join(noise);
+    
+  return {
+    word: normalized,
+    original: item.word,
+    skeleton,
+    pattern: new RegExp(`${noisyPattern}`, 'iu'), // Remove 'g' flag, add 'u' for Unicode
+    skeletonPattern: new RegExp(`${skeletonPattern}`, 'iu'),
+    category: item.category,
+    locale: item.locale,
+    weight: getCategoryWeight(item.category)
+  };
+}
+
+/**
+ * Generate noise-tolerant regex pattern (legacy compatibility)
  */
 function generateNoisePattern(word) {
   const normalized = normalizeKoreanText(word);
@@ -158,6 +227,19 @@ function generateNoisePattern(word) {
     skeletonPattern: new RegExp(`${skeletonPattern}`, 'iu'),
     strength: classifyWordStrength(word)
   };
+}
+
+/**
+ * Get category weight for scoring
+ */
+function getCategoryWeight(category) {
+  const weights = {
+    strong: 3,
+    slur: 3,
+    adult: 2,
+    weak: 1
+  };
+  return weights[category] || 1;
 }
 
 /**
@@ -191,52 +273,116 @@ async function loadAndCompilePatterns() {
   }
   
   patternCompilationPromise = (async () => {
+    debugLog('PatternCompiler', '🔄 패턴 컴파일 시작...');
     try {
-      // Load raw word list
-      const fileUrl = chrome.runtime.getURL('data/fword_list.txt');
-      const response = await fetch(fileUrl);
-      const rawData = await response.text();
+      // Load categorized word list
+      const categoriesUrl = chrome.runtime.getURL('data/fword_categories.json');
+      debugLog('PatternCompiler', `📂 JSON 파일 로딩 시도: ${categoriesUrl}`);
+      const categoriesResponse = await fetch(categoriesUrl);
       
-      // Parse and process words with CRLF support and deduplication
-      const rawWords = Array.from(new Set(rawData
-        .split(/\r?\n/)
-        .map(line => line.trim())
-        .filter(line => line && !line.startsWith('#'))));
+      if (!categoriesResponse.ok) {
+        throw new Error(`HTTP ${categoriesResponse.status}: ${categoriesResponse.statusText}`);
+      }
       
-      // Generate patterns with metadata
-      const patterns = rawWords.map(word => generateNoisePattern(word));
+      const categorizedWords = await categoriesResponse.json();
+      debugLog('PatternCompiler', `✅ JSON 로딩 성공: ${categorizedWords.length}개 단어`);
       
-      // Separate by strength
-      const strongPatterns = patterns.filter(p => p.strength === 'strong');
-      const weakPatterns = patterns.filter(p => p.strength === 'weak');
+      // Generate patterns with category metadata
+      const patterns = categorizedWords.map(item => generateCategorizedPattern(item));
       
-      debugLog('PatternCompiler', `Compiled ${patterns.length} patterns (${strongPatterns.length} strong, ${weakPatterns.length} weak)`);
+      // Group by category for optimized lookup
+      const categorizedPatterns = {
+        strong: patterns.filter(p => p.category === 'strong'),
+        weak: patterns.filter(p => p.category === 'weak'),
+        adult: patterns.filter(p => p.category === 'adult'),
+        slur: patterns.filter(p => p.category === 'slur'),
+        ko: patterns.filter(p => p.locale === 'ko'),
+        en: patterns.filter(p => p.locale === 'en'),
+        all: patterns
+      };
+      
+      debugLog('PatternCompiler', `✅ 패턴 컴파일 완료: ${patterns.length}개 패턴 생성`);
+      debugLog('PatternCompiler', `📊 카테고리별 분포:`);
+      debugLog('PatternCompiler', `  • STRONG: ${categorizedPatterns.strong.length}개 (가중치 +3)`);
+      debugLog('PatternCompiler', `  • ADULT: ${categorizedPatterns.adult.length}개 (가중치 +2)`);
+      debugLog('PatternCompiler', `  • SLUR: ${categorizedPatterns.slur.length}개 (가중치 +3)`);
+      debugLog('PatternCompiler', `  • WEAK: ${categorizedPatterns.weak.length}개 (가중치 +1)`);
+      debugLog('PatternCompiler', `🌐 언어별 분포: 한국어(${categorizedPatterns.ko.length}), 영어(${categorizedPatterns.en.length})`);
       
       compiledPatterns = {
-        strong: strongPatterns,
-        weak: weakPatterns,
-        all: patterns,
+        ...categorizedPatterns,
         compiled: true,
         timestamp: Date.now()
       };
       
       return compiledPatterns;
     } catch (error) {
-      debugLog('PatternCompiler', 'Pattern compilation failed:', error);
+      debugLog('PatternCompiler', '❌ 카테고리 JSON 로딩 실패:', error);
+      debugLog('PatternCompiler', '🔄 기본 fword_list.txt 로딩 시도 중...');
       
-      // Fallback to basic patterns
-      const basicWords = ['씨발', '시발', '좆', '병신', '개새끼', '미친'];
-      const fallbackPatterns = basicWords.map(word => generateNoisePattern(word));
-      
-      compiledPatterns = {
-        strong: fallbackPatterns,
-        weak: [],
-        all: fallbackPatterns,
-        compiled: false,
-        timestamp: Date.now()
-      };
-      
-      return compiledPatterns;
+      try {
+        // Fallback to original fword_list.txt
+        const fileUrl = chrome.runtime.getURL('data/fword_list.txt');
+        const response = await fetch(fileUrl);
+        const rawData = await response.text();
+        
+        const rawWords = Array.from(new Set(rawData
+          .split(/\r?\n/)
+          .map(line => line.trim())
+          .filter(line => line && !line.startsWith('#'))));
+        
+        debugLog('PatternCompiler', `📄 기본 목록에서 ${rawWords.length}개 단어 로딩됨`);
+        
+        const fallbackPatterns = rawWords.map(word => generateNoisePattern(word));
+        const strongPatterns = fallbackPatterns.filter(p => p.strength === 'strong');
+        const weakPatterns = fallbackPatterns.filter(p => p.strength === 'weak');
+        
+        debugLog('PatternCompiler', `⚠️ Fallback 모드: strong(${strongPatterns.length}), weak(${weakPatterns.length})`);
+        
+        compiledPatterns = {
+          strong: strongPatterns,
+          weak: weakPatterns,
+          adult: [],
+          slur: [],
+          ko: fallbackPatterns,
+          en: [],
+          all: fallbackPatterns,
+          compiled: false,
+          timestamp: Date.now()
+        };
+        
+        return compiledPatterns;
+      } catch (fallbackError) {
+        debugLog('PatternCompiler', '❌ Fallback도 실패:', fallbackError);
+        
+        // Last resort: hardcoded patterns
+        const basicWords = [
+          {word: '씨발', category: 'strong', locale: 'ko'},
+          {word: '시발', category: 'strong', locale: 'ko'},
+          {word: '좆', category: 'strong', locale: 'ko'},
+          {word: '병신', category: 'strong', locale: 'ko'},
+          {word: '개새끼', category: 'strong', locale: 'ko'},
+          {word: '미친', category: 'weak', locale: 'ko'}
+        ];
+        
+        const emergencyPatterns = basicWords.map(item => generateCategorizedPattern(item));
+        
+        debugLog('PatternCompiler', `🚨 비상 모드: ${emergencyPatterns.length}개 하드코딩된 패턴 사용`);
+        
+        compiledPatterns = {
+          strong: emergencyPatterns.filter(p => p.category === 'strong'),
+          weak: emergencyPatterns.filter(p => p.category === 'weak'),
+          adult: [],
+          slur: [],
+          ko: emergencyPatterns,
+          en: [],
+          all: emergencyPatterns,
+          compiled: false,
+          timestamp: Date.now()
+        };
+        
+        return compiledPatterns;
+      }
     }
   })();
   
@@ -244,55 +390,103 @@ async function loadAndCompilePatterns() {
 }
 
 /**
- * Advanced risk assessment algorithm V2
+ * Advanced risk assessment algorithm V2 with categorized patterns and detailed logging
  */
 async function calculateAdvancedRiskScore(text) {
   const normalized = normalizeKoreanText(text);
   const skeleton = extractKoreanSkeleton(normalized);
   
-  if (!normalized) return { score: 0, matches: [], contextual: { score: 0, factors: [] } };
+  debugLog('RiskAssessment', '='.repeat(60));
+  debugLog('RiskAssessment', `📊 점수 계산 시작: "${text}"`);
+  debugLog('RiskAssessment', `📝 정규화 텍스트: "${normalized}"`);
+  debugLog('RiskAssessment', `🔤 한글 스켈레톤: "${skeleton}"`);
+  
+  if (!normalized) {
+    debugLog('RiskAssessment', '❌ 정규화된 텍스트가 없어서 점수 0 반환');
+    return { score: 0, matches: [], contextual: { score: 0, factors: [] } };
+  }
   
   const patterns = await loadAndCompilePatterns();
   let score = 0;
   let matches = [];
+  let categoryStats = { strong: 0, weak: 0, adult: 0, slur: 0 };
   
-  // Strong pattern matching (high weight)
-  for (const pattern of patterns.strong) {
-    if (pattern.pattern.test(normalized) || pattern.skeletonPattern.test(skeleton)) {
-      score += 3;
-      matches.push({ word: pattern.word, strength: 'strong', type: 'direct' });
+  debugLog('RiskAssessment', `🎯 패턴 검사 시작: 총 ${patterns.all.length}개 패턴`);
+  
+  // Check all patterns with their specific weights
+  for (const pattern of patterns.all) {
+    const directMatch = pattern.pattern.test(normalized);
+    const skeletonMatch = pattern.skeletonPattern.test(skeleton);
+    
+    if (directMatch || skeletonMatch) {
+      score += pattern.weight;
+      categoryStats[pattern.category]++;
+      
+      const matchType = directMatch ? '직접' : '스켈레톤';
+      debugLog('RiskAssessment', `🚨 매칭됨: "${pattern.original}" (${pattern.category}/${pattern.locale}, +${pattern.weight}점, ${matchType})`);
+      
+      matches.push({ 
+        word: pattern.word, 
+        original: pattern.original,
+        category: pattern.category, 
+        locale: pattern.locale,
+        weight: pattern.weight,
+        type: directMatch ? 'direct' : 'skeleton',
+        matchedBy: directMatch ? 'normalized' : 'skeleton'
+      });
     }
   }
   
-  // Weak pattern matching (lower weight)
-  for (const pattern of patterns.weak) {
-    if (pattern.pattern.test(normalized) || pattern.skeletonPattern.test(skeleton)) {
-      score += 1.5;
-      matches.push({ word: pattern.word, strength: 'weak', type: 'direct' });
-    }
-  }
+  debugLog('RiskAssessment', `📈 패턴 매칭 완료: ${matches.length}개 일치`);
+  debugLog('RiskAssessment', `📊 카테고리별 매칭: strong(${categoryStats.strong}), adult(${categoryStats.adult}), slur(${categoryStats.slur}), weak(${categoryStats.weak})`);
+  debugLog('RiskAssessment', `🎯 현재 점수 (패턴): ${score}점`);
   
   // Additional context scoring
   const contextScore = calculateContextualRisk(text);
+  const patternScore = score;
   score += contextScore.score;
   
-  debugLog('AdvancedRisk', `Text: "${text}" → Score: ${score}, Matches:`, matches);
+  debugLog('RiskAssessment', `🔍 문맥 분석 완료: +${contextScore.score}점`);
+  if (contextScore.factors.length > 0) {
+    debugLog('RiskAssessment', `📋 문맥 요소들: ${contextScore.factors.join(', ')}`);
+  }
+  
+  const finalScore = Math.min(score, 10);
+  debugLog('RiskAssessment', `🎯 최종 점수: ${finalScore}점 (패턴: ${patternScore}점 + 문맥: ${contextScore.score}점 = ${score}점, 최대 10점)`);
+  
+  // 점수 기준 판정
+  let riskLevel = 'LOW';
+  if (finalScore >= 4) riskLevel = 'HIGH';
+  else if (finalScore >= 2) riskLevel = 'MEDIUM';
+  
+  debugLog('RiskAssessment', `⚠️ 위험도: ${riskLevel} (기준: 0-1=LOW, 2-3=MEDIUM, 4+=HIGH)`);
+  debugLog('RiskAssessment', '='.repeat(60));
   
   return {
-    score: Math.min(score, 10), // Cap at 10
+    score: finalScore,
     matches,
     contextual: contextScore,
     normalized,
-    skeleton
+    skeleton,
+    categoryStats,
+    riskLevel,
+    breakdown: {
+      patternScore,
+      contextScore: contextScore.score,
+      totalScore: score,
+      finalScore
+    }
   };
 }
 
 /**
- * Calculate contextual risk factors
+ * Calculate contextual risk factors with detailed logging
  */
 function calculateContextualRisk(text) {
   let score = 0;
   const factors = [];
+  
+  debugLog('ContextAnalysis', `🔍 문맥 분석 시작: "${text}"`);
   
   // Excessive punctuation
   const exclamationCount = (text.match(/!+/g) || []).length;
@@ -301,16 +495,19 @@ function calculateContextualRisk(text) {
   if (exclamationCount >= 2) {
     score += 0.5;
     factors.push('excessive_exclamation');
+    debugLog('ContextAnalysis', `❗ 과도한 느낌표 발견: ${exclamationCount}개, +0.5점`);
   }
   
   if (questionCount >= 2) {
     score += 0.5;
     factors.push('excessive_question');
+    debugLog('ContextAnalysis', `❓ 과도한 물음표 발견: ${questionCount}개, +0.5점`);
   }
   
   if (text.includes('?!') || text.includes('!?')) {
     score += 0.5;
     factors.push('mixed_punctuation');
+    debugLog('ContextAnalysis', `‼️ 혼합 구두점 발견: +0.5점`);
   }
   
   // Aggressive words
@@ -319,6 +516,7 @@ function calculateContextualRisk(text) {
     if (text.includes(word)) {
       score += 0.3;
       factors.push(`aggressive_${word}`);
+      debugLog('ContextAnalysis', `🔥 공격적 단어 발견: "${word}", +0.3점`);
     }
   }
   
@@ -328,7 +526,10 @@ function calculateContextualRisk(text) {
   if (letters.length >= 6 && uppercase.length / letters.length >= 0.5) {
     score += 0.5;
     factors.push('excessive_caps');
+    debugLog('ContextAnalysis', `🔠 과도한 대문자 발견: ${uppercase.length}/${letters.length}, +0.5점`);
   }
+  
+  debugLog('ContextAnalysis', `✅ 문맥 분석 완료: ${score}점 (${factors.length}개 요소)`);
   
   return { score, factors };
 }
@@ -402,48 +603,65 @@ async function calculateAdvancedRiskScoreWithWhitelist(text) {
  * @returns {Promise<boolean>} Success status
  */
 async function safeSendMessage(tabId, message, frameId = undefined) {
+  console.log(`📨 safeSendMessage: tab=${tabId}, type=${message.type}, frame=${frameId || 'top'}`);
+  
+  // Also send debug info to content script if it's a debug scenario
+  if (message.type === MESSAGE_TYPES.BIZTONE_REPLACE_WITH) {
+    // Add debug metadata to the message
+    message.__debug_info = {
+      timestamp: Date.now(),
+      source: 'background-keyboard-shortcut',
+      tabId,
+      frameId: frameId || 'top'
+    };
+  }
+  
   return new Promise((resolve) => {
-    const handleCallback = () => {
+    let resolved = false; // Prevent multiple resolutions
+    
+    const safeResolve = (result) => {
+      if (!resolved) {
+        resolved = true;
+        resolve(result);
+      } else {
+        console.log(`⚠️ safeSendMessage: Prevented duplicate resolution for ${message.type}`);
+      }
+    };
+
+    const handleCallback = (response) => {
       if (chrome.runtime.lastError) {
-        debugLog("SendMessage", "First attempt failed:", chrome.runtime.lastError.message);
-        // Fallback to top frame
-        try {
-          chrome.tabs.sendMessage(tabId, message, () => {
-            if (chrome.runtime.lastError) {
-              debugLog("SendMessage", "Fallback failed:", chrome.runtime.lastError.message);
-              resolve(false);
-            } else {
-              resolve(true);
-            }
-          });
-        } catch (error) {
-          debugLog("SendMessage", "Fallback exception:", error);
-          resolve(false);
+        console.log(`❌ First attempt failed: ${chrome.runtime.lastError.message}`);
+        
+        // Only try fallback if not already resolved
+        if (!resolved) {
+          try {
+            chrome.tabs.sendMessage(tabId, message, (fallbackResponse) => {
+              if (chrome.runtime.lastError) {
+                console.log(`❌ Fallback failed: ${chrome.runtime.lastError.message}`);
+                safeResolve(false);
+              } else {
+                console.log(`✅ Fallback succeeded`);
+                safeResolve(true);
+              }
+            });
+          } catch (error) {
+            console.log(`❌ Fallback exception:`, error);
+            safeResolve(false);
+          }
         }
       } else {
-        resolve(true);
+        console.log(`✅ First attempt succeeded`);
+        safeResolve(true);
       }
     };
 
     try {
       const options = typeof frameId === "number" ? { frameId } : undefined;
+      console.log(`📨 Sending message with options:`, options);
       chrome.tabs.sendMessage(tabId, message, options, handleCallback);
     } catch (error) {
-      debugLog("SendMessage", "Primary exception:", error);
-      // Final fallback
-      try {
-        chrome.tabs.sendMessage(tabId, message, () => {
-          if (chrome.runtime.lastError) {
-            debugLog("SendMessage", "Final fallback failed:", chrome.runtime.lastError.message);
-            resolve(false);
-          } else {
-            resolve(true);
-          }
-        });
-      } catch (finalError) {
-        debugLog("SendMessage", "Final fallback exception:", finalError);
-        resolve(false);
-      }
+      console.log(`❌ Primary exception:`, error);
+      safeResolve(false);
     }
   });
 }
@@ -455,14 +673,21 @@ async function safeSendMessage(tabId, message, frameId = undefined) {
  */
 async function ensureContentScript(tabId) {
   try {
-    await chrome.scripting.executeScript({
+    console.log(`💫 Injecting content script into tab ${tabId} (allFrames: true)`);
+    const results = await chrome.scripting.executeScript({
       target: { tabId, allFrames: true },
       files: ["contentScript.js"],
       injectImmediately: true
     });
-    debugLog("ContentScript", `Injected into tab ${tabId}`);
+    console.log(`✅ Content script injection successful - ${results?.length || 0} frames affected`);
+    if (results?.length > 1) {
+      console.warn(`⚠️ MULTIPLE FRAMES DETECTED: ${results.length} frames! This might cause duplicate execution.`);
+      results.forEach((result, i) => {
+        console.log(`   Frame ${i}: ${result.frameId || 'main'}, URL: ${result.documentId || 'unknown'}`);
+      });
+    }
   } catch (error) {
-    debugLog("ContentScript", `Injection failed for tab ${tabId}:`, error?.message);
+    console.warn(`❌ Content script injection failed for tab ${tabId}:`, error?.message);
     throw new Error(`Content script injection failed: ${error?.message || error}`);
   }
 }
@@ -899,6 +1124,34 @@ chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
         await handleAdvancedRiskAssessment(message.text, sendResponse);
         break;
 
+      case MESSAGE_TYPES.BIZTONE_GET_DOMAIN_STATUS:
+        await handleGetDomainStatus(message, sendResponse);
+        break;
+        
+      case MESSAGE_TYPES.BIZTONE_TOGGLE_DOMAIN:
+        await handleToggleDomain(message, sendResponse);
+        break;
+        
+      case MESSAGE_TYPES.BIZTONE_PAUSE_DOMAIN:
+        await handlePauseDomain(message, sendResponse);
+        break;
+        
+      case MESSAGE_TYPES.BIZTONE_GET_DOMAIN_RULES:
+        await handleGetDomainRules(message, sendResponse);
+        break;
+        
+      case MESSAGE_TYPES.BIZTONE_SET_DOMAIN_RULE:
+        await handleSetDomainRule(message, sendResponse);
+        break;
+        
+      case MESSAGE_TYPES.BIZTONE_REMOVE_DOMAIN_RULE:
+        await handleRemoveDomainRule(message, sendResponse);
+        break;
+
+      case MESSAGE_TYPES.BIZTONE_GET_GUARD_MODE:
+        sendResponse(createSuccessResponse({ guardMode: getGuardMode() }));
+        break;
+
       case MESSAGE_TYPES.OPEN_OPTIONS:
         chrome.runtime.openOptionsPage();
         sendResponse({ ok: true });
@@ -913,23 +1166,45 @@ chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
 });
 
 // Handle keyboard shortcut commands
+let commandCount = 0;
 chrome.commands.onCommand.addListener(async (command) => {
-  if (command !== "convert-selection") return;
+  commandCount++;
+  const timestamp = Date.now();
+  console.log(`🎯 BACKGROUND COMMAND #${commandCount}: "${command}" at ${timestamp}`);
+  
+  if (command !== "convert-selection") {
+    console.log(`❌ Ignoring unknown command: ${command}`);
+    return;
+  }
 
   // Debounce rapid key presses
   const now = Date.now();
-  if (now - debounceTimestamp < CONFIG.DEBOUNCE_MS) return;
-  debounceTimestamp = now;
-
-  const [activeTab] = await chrome.tabs.query({ active: true, currentWindow: true });
-  if (!activeTab?.id) return;
-
-  // Ensure content script is ready
-  const hasListener = await ensureContentListener(activeTab.id);
-  if (!hasListener) {
-    debugLog("Shortcut", "Failed to ensure content listener");
+  const gap = debounceTimestamp ? now - debounceTimestamp : 'FIRST';
+  console.log(`🕒 Debounce check: gap=${gap}ms, threshold=${CONFIG.DEBOUNCE_MS}ms, count=${commandCount}`);
+  
+  if (typeof gap === 'number' && gap < CONFIG.DEBOUNCE_MS) {
+    console.warn(`❌ DEBOUNCED: Command #${commandCount} ignored (gap: ${gap}ms < ${CONFIG.DEBOUNCE_MS}ms)`);
     return;
   }
+  debounceTimestamp = now;
+  console.log(`✅ Processing command #${commandCount}...`);
+
+  const [activeTab] = await chrome.tabs.query({ active: true, currentWindow: true });
+  if (!activeTab?.id) {
+    console.log(`❌ No active tab found`);
+    return;
+  }
+  
+  console.log(`🎯 Active tab: ${activeTab.id} - ${activeTab.url}`);
+
+  // Ensure content script is ready
+  console.log(`📋 Ensuring content listener for tab ${activeTab.id}...`);
+  const hasListener = await ensureContentListener(activeTab.id);
+  if (!hasListener) {
+    console.warn(`❌ Failed to ensure content listener for tab ${activeTab.id}`);
+    return;
+  }
+  console.log(`✅ Content listener ready for tab ${activeTab.id}`);
 
   // Get selected text
   const selection = await getSelectionFromAllFrames(activeTab.id);
@@ -953,12 +1228,18 @@ chrome.commands.onCommand.addListener(async (command) => {
   }
 
   // Convert and replace text directly
+  console.log(`🔄 Converting text: "${selection.text?.slice(0, 50)}..."`);
   try {
     const convertedText = await convertToBusinessTone(selection.text, model, key);
-    await safeSendMessage(activeTab.id, {
+    console.log(`✅ Conversion successful: "${convertedText?.slice(0, 50)}..."`);
+    console.log(`📨 Sending REPLACE_WITH message to tab ${activeTab.id}, frame ${selection.frameId || 'top'}`);
+    
+    const messageSent = await safeSendMessage(activeTab.id, {
       type: MESSAGE_TYPES.BIZTONE_REPLACE_WITH,
       text: convertedText
     }, selection.frameId);
+    
+    console.log(`📨 Message sent result: ${messageSent}`);
   } catch (error) {
     await safeSendMessage(activeTab.id, {
       type: MESSAGE_TYPES.BIZTONE_ERROR,
@@ -967,4 +1248,343 @@ chrome.commands.onCommand.addListener(async (command) => {
   }
 });
 
+// Listen for storage changes to reload guard mode settings
+chrome.storage.onChanged.addListener((changes, areaName) => {
+  if (areaName === 'sync' && changes.GUARD_MODE) {
+    const newValue = changes.GUARD_MODE.newValue;
+    debugLog("Settings", "Guard mode changed to:", newValue);
+    guardModeSettings.GUARD_MODE = newValue || "convert";
+  }
+});
+
 debugLog("Init", "Background script initialized");
+
+// ==================== DOMAIN RULES MESSAGE HANDLERS ====================
+
+/**
+ * Handle get domain status message
+ */
+async function handleGetDomainStatus(message, sendResponse) {
+  try {
+    const domain = message.domain;
+    if (!domain) {
+      return sendResponse(createErrorResponse('Domain not provided'));
+    }
+    
+    const status = await getDomainStatus(domain);
+    sendResponse(createSuccessResponse(status));
+  } catch (error) {
+    debugLog('DomainHandler', 'Get status failed:', error);
+    sendResponse(createErrorResponse('Failed to get domain status'));
+  }
+}
+
+/**
+ * Handle toggle domain message
+ */
+async function handleToggleDomain(message, sendResponse) {
+  try {
+    const domain = message.domain;
+    if (!domain) {
+      return sendResponse(createErrorResponse('Domain not provided'));
+    }
+    
+    const newEnabled = await toggleDomainEnabled(domain);
+    const status = await getDomainStatus(domain);
+    
+    sendResponse(createSuccessResponse({ 
+      ...status, 
+      toggled: true, 
+      newEnabled 
+    }));
+  } catch (error) {
+    debugLog('DomainHandler', 'Toggle failed:', error);
+    sendResponse(createErrorResponse('Failed to toggle domain'));
+  }
+}
+
+/**
+ * Handle pause domain message
+ */
+async function handlePauseDomain(message, sendResponse) {
+  try {
+    const { domain, minutes } = message;
+    if (!domain || !minutes) {
+      return sendResponse(createErrorResponse('Domain or minutes not provided'));
+    }
+    
+    await pauseDomain(domain, minutes);
+    const status = await getDomainStatus(domain);
+    
+    sendResponse(createSuccessResponse({ 
+      ...status, 
+      paused: true, 
+      pausedFor: minutes 
+    }));
+  } catch (error) {
+    debugLog('DomainHandler', 'Pause failed:', error);
+    sendResponse(createErrorResponse('Failed to pause domain'));
+  }
+}
+
+/**
+ * Handle get domain rules message
+ */
+async function handleGetDomainRules(message, sendResponse) {
+  try {
+    const rules = await getDomainRules();
+    sendResponse(createSuccessResponse(rules));
+  } catch (error) {
+    debugLog('DomainHandler', 'Get rules failed:', error);
+    sendResponse(createErrorResponse('Failed to get domain rules'));
+  }
+}
+
+/**
+ * Handle set domain rule message
+ */
+async function handleSetDomainRule(message, sendResponse) {
+  try {
+    const { domain, options } = message;
+    if (!domain) {
+      return sendResponse(createErrorResponse('Domain not provided'));
+    }
+    
+    const success = await setDomainRule(domain, options);
+    if (success) {
+      const status = await getDomainStatus(domain);
+      sendResponse(createSuccessResponse(status));
+    } else {
+      sendResponse(createErrorResponse('Failed to save domain rule'));
+    }
+  } catch (error) {
+    debugLog('DomainHandler', 'Set rule failed:', error);
+    sendResponse(createErrorResponse('Failed to set domain rule'));
+  }
+}
+
+/**
+ * Handle remove domain rule message
+ */
+async function handleRemoveDomainRule(message, sendResponse) {
+  try {
+    const domain = message.domain;
+    if (!domain) {
+      return sendResponse(createErrorResponse('Domain not provided'));
+    }
+    
+    const success = await removeDomainRule(domain);
+    if (success) {
+      const status = await getDomainStatus(domain);
+      sendResponse(createSuccessResponse({ 
+        ...status, 
+        removed: true 
+      }));
+    } else {
+      sendResponse(createErrorResponse('Failed to remove domain rule'));
+    }
+  } catch (error) {
+    debugLog('DomainHandler', 'Remove rule failed:', error);
+    sendResponse(createErrorResponse('Failed to remove domain rule'));
+  }
+}
+
+// ==================== DOMAIN RULES MANAGEMENT ====================
+
+/**
+ * Domain rules storage key
+ */
+const DOMAIN_RULES_KEY = 'BIZTONE_DOMAIN_RULES';
+
+/**
+ * Get domain from URL
+ */
+function getDomainFromUrl(url) {
+  try {
+    const urlObj = new URL(url);
+    return urlObj.hostname.toLowerCase();
+  } catch (error) {
+    debugLog('DomainRules', `Invalid URL: ${url}`);
+    return null;
+  }
+}
+
+/**
+ * Get domain rules from storage
+ */
+async function getDomainRules() {
+  try {
+    const result = await chrome.storage.sync.get([DOMAIN_RULES_KEY]);
+    return result[DOMAIN_RULES_KEY] || {};
+  } catch (error) {
+    debugLog('DomainRules', 'Failed to get domain rules:', error);
+    return {};
+  }
+}
+
+/**
+ * Save domain rules to storage
+ */
+async function saveDomainRules(rules) {
+  try {
+    await chrome.storage.sync.set({ [DOMAIN_RULES_KEY]: rules });
+    debugLog('DomainRules', '✅ Domain rules saved successfully');
+    return true;
+  } catch (error) {
+    debugLog('DomainRules', '❌ Failed to save domain rules:', error);
+    return false;
+  }
+}
+
+/**
+ * Check if BizTone is enabled for a domain
+ */
+async function isDomainEnabled(domain) {
+  if (!domain) return true; // Default enabled
+  
+  const rules = await getDomainRules();
+  const rule = rules[domain];
+  
+  if (!rule) return true; // Default enabled for new domains
+  
+  // Check if paused
+  if (rule.pauseUntil && rule.pauseUntil > Date.now()) {
+    debugLog('DomainRules', `🔇 Domain ${domain} is paused until ${new Date(rule.pauseUntil)}`);
+    return false;
+  }
+  
+  // Check enabled flag
+  const enabled = rule.enabled !== false; // Default true
+  debugLog('DomainRules', `🎯 Domain ${domain} is ${enabled ? 'enabled' : 'disabled'}`);
+  return enabled;
+}
+
+/**
+ * Set domain rule
+ */
+async function setDomainRule(domain, options = {}) {
+  const rules = await getDomainRules();
+  
+  const defaultRule = {
+    enabled: true,
+    mode: 'guard',
+    pauseUntil: 0,
+    createdAt: Date.now(),
+    updatedAt: Date.now()
+  };
+  
+  rules[domain] = {
+    ...defaultRule,
+    ...rules[domain], // Keep existing data
+    ...options, // Apply new options
+    updatedAt: Date.now()
+  };
+  
+  debugLog('DomainRules', `🔧 Set rule for ${domain}:`, rules[domain]);
+  return await saveDomainRules(rules);
+}
+
+/**
+ * Remove domain rule (revert to default enabled)
+ */
+async function removeDomainRule(domain) {
+  const rules = await getDomainRules();
+  if (rules[domain]) {
+    delete rules[domain];
+    debugLog('DomainRules', `🗑️ Removed rule for ${domain}`);
+    return await saveDomainRules(rules);
+  }
+  return true;
+}
+
+/**
+ * Pause domain for specific duration
+ */
+async function pauseDomain(domain, minutes) {
+  const pauseUntil = Date.now() + (minutes * 60 * 1000);
+  return await setDomainRule(domain, { 
+    pauseUntil,
+    enabled: true // Keep enabled, just paused
+  });
+}
+
+/**
+ * Resume domain (clear pause)
+ */
+async function resumeDomain(domain) {
+  return await setDomainRule(domain, { 
+    pauseUntil: 0 
+  });
+}
+
+/**
+ * Toggle domain enabled status
+ */
+async function toggleDomainEnabled(domain) {
+  const rules = await getDomainRules();
+  const currentRule = rules[domain] || { enabled: true };
+  const newEnabled = !currentRule.enabled;
+  
+  await setDomainRule(domain, { 
+    enabled: newEnabled,
+    pauseUntil: 0 // Clear any pause when toggling
+  });
+  
+  debugLog('DomainRules', `🔄 Toggled ${domain}: ${newEnabled ? 'ON' : 'OFF'}`);
+  return newEnabled;
+}
+
+/**
+ * Get domain status for popup/UI
+ */
+async function getDomainStatus(domain) {
+  if (!domain) return { enabled: true, paused: false, rule: null };
+  
+  const rules = await getDomainRules();
+  const rule = rules[domain];
+  
+  if (!rule) {
+    return { 
+      enabled: true, 
+      paused: false, 
+      rule: null,
+      domain 
+    };
+  }
+  
+  const now = Date.now();
+  const paused = rule.pauseUntil && rule.pauseUntil > now;
+  const pauseRemaining = paused ? Math.ceil((rule.pauseUntil - now) / (60 * 1000)) : 0;
+  
+  return {
+    enabled: rule.enabled !== false,
+    paused,
+    pauseRemaining,
+    rule,
+    domain
+  };
+}
+
+// ==================== STARTUP PATTERN COMPILATION ====================
+
+/**
+ * Pre-compile patterns on extension startup for optimal performance
+ */
+(async () => {
+  try {
+    debugLog("Startup", "🚀 Starting initialization...");
+    const startTime = Date.now();
+    
+    // Load settings first
+    await loadGuardModeSettings();
+    
+    // Then compile patterns
+    await loadAndCompilePatterns();
+    
+    const duration = Date.now() - startTime;
+    debugLog("Startup", `✅ Initialization completed in ${duration}ms`);
+    debugLog("Startup", `📊 Ready for zero-latency guard operations with ${getGuardMode()} mode`);
+  } catch (error) {
+    debugLog("Startup", "⚠️ Initialization failed:", error);
+  }
+})();

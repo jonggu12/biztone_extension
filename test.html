@@ -76,6 +76,28 @@
             font-size: 12px;
             margin-top: 20px;
             white-space: pre-wrap;
+            max-height: 400px;
+            overflow-y: auto;
+            border: 1px solid #4a5568;
+        }
+        
+        .clear-log {
+            background: #dc3545;
+            color: white;
+            border: none;
+            padding: 8px 15px;
+            border-radius: 4px;
+            cursor: pointer;
+            margin-bottom: 10px;
+            font-size: 12px;
+        }
+        
+        .stats {
+            background: #f8f9fa;
+            padding: 10px;
+            border-radius: 6px;
+            margin-bottom: 10px;
+            font-size: 13px;
         }
     </style>
 </head>
@@ -117,26 +139,67 @@
     </div>
 
     <div class="test-container">
+        <h3>⌨️ 키보드 단축키 테스트</h3>
+        <div class="input-group">
+            <label for="keyboard-test">키보드 테스트 (Ctrl+Shift+Y / Cmd+Shift+Y):</label>
+            <textarea id="keyboard-test" rows="3" placeholder="텍스트를 선택하고 키보드 단축키를 누르세요...">씨발 이거 뭐야</textarea>
+            <p style="color: #666; font-size: 12px; margin-top: 5px;">※ 텍스트를 드래그로 선택한 후 키보드 단축키를 눌러보세요. 콘솔에서 중복 메시지를 확인할 수 있습니다.</p>
+        </div>
+    </div>
+
+    <div class="test-container">
         <h3>🧪 테스트 샘플</h3>
         <p>아래 샘플을 클릭하면 입력창에 자동으로 입력됩니다:</p>
         
         <div class="test-samples">
+            <h4 style="color: #28a745; margin: 15px 0 5px 0;">✅ 안전한 메시지 (점수 0-1)</h4>
             <div class="sample-item safe" onclick="fillInput(this.textContent)">안녕하세요, 잘 부탁드립니다.</div>
             <div class="sample-item safe" onclick="fillInput(this.textContent)">회의 시간을 확인해 주세요.</div>
             <div class="sample-item safe" onclick="fillInput(this.textContent)">시발점에서 만나요.</div>
+            <div class="sample-item safe" onclick="fillInput(this.textContent)">개발자 회의 참석하세요.</div>
             
-            <div class="sample-item medium" onclick="fillInput(this.textContent)">빨리 처리해 주세요!</div>
-            <div class="sample-item medium" onclick="fillInput(this.textContent)">왜 이렇게 늦어요?</div>
+            <h4 style="color: #ffc107; margin: 15px 0 5px 0;">⚠️ 약한 위험 - WEAK 카테고리 (점수 1-2)</h4>
+            <div class="sample-item medium" onclick="fillInput(this.textContent)">미친듯이 일해야겠다</div>
+            <div class="sample-item medium" onclick="fillInput(this.textContent)">똥같은 날씨네</div>
+            <div class="sample-item medium" onclick="fillInput(this.textContent)">아가리 좀 닥쳐</div>
             
+            <h4 style="color: #ffc107; margin: 15px 0 5px 0;">⚠️ 문맥적 위험 (공격적 언어+구두점)</h4>
+            <div class="sample-item medium" onclick="fillInput(this.textContent)">빨리 처리해 주세요!!!</div>
+            <div class="sample-item medium" onclick="fillInput(this.textContent)">왜 이렇게 늦어요?! 당장 해주세요!</div>
+            <div class="sample-item medium" onclick="fillInput(this.textContent)">최악이네요... 짜증나</div>
+            
+            <h4 style="color: #ff6b35; margin: 15px 0 5px 0;">🔞 성적 표현 - ADULT 카테고리 (점수 2+)</h4>
+            <div class="sample-item risk" onclick="fillInput(this.textContent)">자지 같은 소리</div>
+            <div class="sample-item risk" onclick="fillInput(this.textContent)">보지도 못했어</div>
+            <div class="sample-item risk" onclick="fillInput(this.textContent)">섹스 어필 하지마</div>
+            
+            <h4 style="color: #dc3545; margin: 15px 0 5px 0;">🚨 강한 욕설 - STRONG 카테고리 (점수 3+)</h4>
             <div class="sample-item risk" onclick="fillInput(this.textContent)">씨발 이거 뭐야</div>
-            <div class="sample-item risk" onclick="fillInput(this.textContent)">미친놈아 제대로 해</div>
-            <div class="sample-item risk" onclick="fillInput(this.textContent)">개똥같은 일정</div>
+            <div class="sample-item risk" onclick="fillInput(this.textContent)">시발 미친놈아</div>
+            <div class="sample-item risk" onclick="fillInput(this.textContent)">개새끼 제대로 해</div>
+            <div class="sample-item risk" onclick="fillInput(this.textContent)">병신같은 일정</div>
+            
+            <h4 style="color: #6f42c1; margin: 15px 0 5px 0;">🏳️‍🌈 차별 표현 - SLUR 카테고리 (점수 3+)</h4>
+            <div class="sample-item risk" onclick="fillInput(this.textContent)">게이같은 놈</div>
+            <div class="sample-item risk" onclick="fillInput(this.textContent)">애자 새끼</div>
+            
+            <h4 style="color: #333; margin: 15px 0 5px 0;">🔤 노이즈 우회 테스트</h4>
+            <div class="sample-item risk" onclick="fillInput(this.textContent)">s.i.b.a.l 진짜</div>
+            <div class="sample-item risk" onclick="fillInput(this.textContent)">씨-발 뭐지</div>
+            <div class="sample-item risk" onclick="fillInput(this.textContent)">ㅅㅂ 이거</div>
         </div>
     </div>
 
+    <div class="stats" id="stats">
+        📈 메시지 통계: <span id="message-count">0</span> | 중복 감지: <span id="duplicate-count">0</span> | 키보드 단축키: <span id="shortcut-count">0</span>
+    </div>
+    
+    <button class="clear-log" onclick="clearDebugLog()">🗑️ 로그 지우기</button>
+    
     <div class="debug-info" id="debug-log">
-        콘솔 디버그 로그가 여기에 표시됩니다...
-        브라우저 개발자 도구(F12) → Console 탭을 확인하세요.
+        📊 실시간 디버그 로그 (버그 추적용)
+        ※ Ctrl+Shift+Y (Mac: Cmd+Shift+Y) 단축키를 눈여겨보세요
+        
     </div>
 
     <script>
@@ -151,9 +214,29 @@
 
         function fillInput(text) {
             const input = document.getElementById('messenger-input');
+            const keyboardTest = document.getElementById('keyboard-test');
             input.value = text;
+            keyboardTest.value = text;
             input.focus();
+            console.log(`📝 Filled input with: "${text}"`);
         }
+        
+        // Add selection tracking for keyboard test
+        document.getElementById('keyboard-test').addEventListener('select', function(e) {
+            const selected = this.value.slice(this.selectionStart, this.selectionEnd);
+            if (selected) {
+                console.log(`✨ Text selected in keyboard test area: "${selected}"`);
+                console.log(`📍 Selection range: ${this.selectionStart}-${this.selectionEnd}`);
+            }
+        });
+        
+        // Track mouseup for selection detection
+        document.getElementById('keyboard-test').addEventListener('mouseup', function(e) {
+            const selected = this.value.slice(this.selectionStart, this.selectionEnd);
+            if (selected) {
+                console.log(`🖱️ Mouse selection detected: "${selected}"`);
+            }
+        });
 
         // Add placeholder support for contenteditable
         const editableEl = document.getElementById('chat-editable');
@@ -172,8 +255,176 @@
         // Initialize placeholder
         editableEl.innerHTML = '<span style="color: #999;">채팅 메시지를 입력하고 Enter를 누르세요...</span>';
 
-        console.log('🛡️ BizTone Guard Test Page Loaded');
+        // Enhanced console logging for debugging
+        const originalLog = console.log;
+        const originalDebug = console.debug;
+        const originalWarn = console.warn;
+        
+        function logWithTimestamp(level, ...args) {
+            const timestamp = new Date().toISOString().split('T')[1].split('.')[0];
+            const logEl = document.getElementById('debug-log');
+            const message = `[${timestamp}] [${level.toUpperCase()}] ${args.join(' ')}`;
+            logEl.textContent += message + '\n';
+            logEl.scrollTop = logEl.scrollHeight;
+        }
+        
+        console.log = function(...args) {
+            originalLog.apply(console, arguments);
+            logWithTimestamp('log', ...args);
+        };
+        
+        console.debug = function(...args) {
+            originalDebug.apply(console, arguments);
+            logWithTimestamp('debug', ...args);
+        };
+        
+        console.warn = function(...args) {
+            originalWarn.apply(console, arguments);
+            logWithTimestamp('warn', ...args);
+        };
+        
+        // Track ALL keyboard events to debug timing issues
+        let keyEventCount = 0;
+        
+        document.addEventListener('keydown', function(e) {
+            if ((e.ctrlKey || e.metaKey) && e.shiftKey && e.key === 'Y') {
+                keyEventCount++;
+                const timestamp = Date.now();
+                const activeEl = document.activeElement;
+                const selection = window.getSelection()?.toString() || '';
+                const inputSelection = activeEl && (activeEl.tagName === 'TEXTAREA' || activeEl.tagName === 'INPUT') 
+                    ? activeEl.value.slice(activeEl.selectionStart, activeEl.selectionEnd) : '';
+                
+                console.log(`🎯 KEYDOWN #${keyEventCount}: Ctrl/Cmd+Shift+Y at ${timestamp}`);
+                console.log(`🎯 Frame: ${window.self === window.top ? 'TOP' : 'IFRAME'}, Location: ${window.location.href}`);
+                console.log(`🎯 Event details: repeat=${e.repeat}, isTrusted=${e.isTrusted}`);
+                console.log(`🎯 Active element: ${activeEl?.tagName}, ID: ${activeEl?.id}`);
+                console.log(`🎯 DOM Selection: "${selection?.slice(0, 50)}"`);
+                console.log(`🎯 Input Selection: "${inputSelection?.slice(0, 50)}"`);
+                
+                // DON'T prevent default to see if Chrome extension still captures it
+            }
+        });
+        
+        document.addEventListener('keyup', function(e) {
+            if ((e.ctrlKey || e.metaKey) && e.shiftKey && e.key === 'Y') {
+                console.log(`🎯 KEYUP: Ctrl/Cmd+Shift+Y released at ${Date.now()}`);
+                console.log(`🎯 Key release event details: repeat=${e.repeat}, isTrusted=${e.isTrusted}`);
+            }
+        });
+        
+        // Statistics tracking
+        let messageCount = 0;
+        let duplicateCount = 0;
+        let shortcutCount = 0;
+        
+        function updateStats() {
+            document.getElementById('message-count').textContent = messageCount;
+            document.getElementById('duplicate-count').textContent = duplicateCount;
+            document.getElementById('shortcut-count').textContent = shortcutCount;
+        }
+        
+        function clearDebugLog() {
+            document.getElementById('debug-log').textContent = '📊 로그 지워짐 - 새로운 이벤트를 기다리는 중...';
+            messageCount = 0;
+            duplicateCount = 0;
+            shortcutCount = 0;
+            updateStats();
+        }
+        
+        // Enhanced message detection
+        const originalConsoleLog = console.log;
+        console.log = function(...args) {
+            originalConsoleLog.apply(console, arguments);
+            const message = args.join(' ');
+            
+            // Track different types of events
+            if (message.includes('KEYBOARD COMMAND RECEIVED') || message.includes('KEYBOARD SHORTCUT DETECTED')) {
+                shortcutCount++;
+                updateStats();
+                logWithTimestamp('SHORTCUT', `🎯 ${message}`);
+            } else if (message.includes('REPLACE_WITH message received')) {
+                messageCount++;
+                updateStats();
+                logWithTimestamp('MESSAGE', `📨 ${message}`);
+            } else if (message.includes('DUPLICATE REPLACE_WITH message ignored')) {
+                duplicateCount++;
+                updateStats();
+                logWithTimestamp('DUPLICATE', `❌ ${message}`);
+            } else if (message.includes('BizTone') || message.includes('🔄') || message.includes('✅') || message.includes('❌')) {
+                logWithTimestamp('DEBUG', message);
+            }
+        };
+        
+        // Initialize
+        updateStats();
+        console.log('🛡️ BizTone Guard Test Page Loaded with Enhanced Debugging');
         console.debug('[Test] Extension should inject contentScript.js and start monitoring Enter keys');
+        console.log('🎯 Press Ctrl+Shift+Y (or Cmd+Shift+Y on Mac) after selecting text to test keyboard shortcut');
+        console.log('📊 Statistics tracking enabled - watch for duplicate messages!');
+        
+        // Test pattern compilation status
+        setTimeout(() => {
+            console.log('🔍 Testing pattern compilation status...');
+            testPatternCompilation();
+        }, 2000);
+        
+        // Test pattern compilation
+        window.testPatternCompilation = async function() {
+            console.log('📊 Testing background.js pattern compilation...');
+            
+            // Test a few different words
+            const testWords = [
+                { word: '자지', expected: 'adult', points: 2 },
+                { word: '씨발', expected: 'strong', points: 3 },
+                { word: '게이', expected: 'slur', points: 3 },
+                { word: '미친', expected: 'weak', points: 1 },
+                { word: '안녕하세요', expected: 'safe', points: 0 }
+            ];
+            
+            for (const test of testWords) {
+                try {
+                    console.log(`🧪 Testing "${test.word}" (expect: ${test.expected}, ${test.points}pts)`);
+                    
+                    // Simulate text input
+                    const input = document.getElementById('messenger-input');
+                    input.value = test.word;
+                    
+                    // Trigger Enter to activate guard
+                    const enterEvent = new KeyboardEvent('keydown', {
+                        key: 'Enter',
+                        code: 'Enter',
+                        keyCode: 13,
+                        bubbles: true,
+                        cancelable: true
+                    });
+                    
+                    input.dispatchEvent(enterEvent);
+                    
+                    // Wait a bit for processing
+                    await new Promise(resolve => setTimeout(resolve, 500));
+                    
+                } catch (error) {
+                    console.error(`❌ Test failed for "${test.word}":`, error);
+                }
+            }
+            
+            console.log('✅ Pattern compilation test completed');
+        };
+        
+        // Add global function for manual testing
+        window.testKeyboardShortcut = function() {
+            console.log('🛠️ Manual keyboard shortcut test triggered');
+            document.dispatchEvent(new KeyboardEvent('keydown', {
+                key: 'Y',
+                ctrlKey: true,
+                shiftKey: true,
+                bubbles: true
+            }));
+        };
+        
+        console.log('🛠️ Run testKeyboardShortcut() in console to manually trigger the shortcut');
+        console.log('🧪 Run testPatternCompilation() in console to test all categories');
     </script>
 </body>
 </html>

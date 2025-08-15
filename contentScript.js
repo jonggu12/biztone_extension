@@ -5,16 +5,22 @@
 
 (() => {
   // Prevent duplicate injection
-  if (window.__BIZTONE_CS_LOADED__) return;
+  if (window.__BIZTONE_CS_LOADED__) {
+    console.warn(`❌ BizTone ContentScript already loaded in frame: ${window.self === window.top ? 'TOP' : 'IFRAME'} - ${window.location.href}`);
+    return;
+  }
   window.__BIZTONE_CS_LOADED__ = true;
+  
+  const loadFrameInfo = window.self === window.top ? 'TOP-FRAME' : `IFRAME(${window.location.href})`;
+  console.log(`✅ BizTone ContentScript loading in ${loadFrameInfo}`);
 
   // ==================== CONSTANTS & CONFIGURATION ====================
 
   const CONFIG = {
-    // Prefilter thresholds - Made more sensitive for testing
+    // Prefilter thresholds - Balanced for warn mode
     PREFILTER: {
       PASS_MAX: 1,     // Score ≤ 1: allow immediate send
-      CONVERT_MIN: 2   // Score ≥ 2: direct conversion (more sensitive for testing)
+      CONVERT_MIN: 4   // Score ≥ 4: strong profanity/convert, 2-3: medium risk/prompt
     },
     
     // Cache settings
@@ -50,6 +56,8 @@
     BIZTONE_REPLACE_WITH: "BIZTONE_REPLACE_WITH",
     BIZTONE_CONVERT_TEXT: "BIZTONE_CONVERT_TEXT",
     BIZTONE_GUARD_DECIDE: "BIZTONE_GUARD_DECIDE",
+    BIZTONE_GET_GUARD_MODE: "BIZTONE_GET_GUARD_MODE",
+    BIZTONE_GUARD_WARNING: "BIZTONE_GUARD_WARNING",
     OPEN_OPTIONS: "OPEN_OPTIONS"
   };
 
@@ -70,6 +78,13 @@
   // Guard processing state
   let __BIZTONE_PENDING = false;
   let __BIZTONE_LAST_TS = 0;
+  let __BIZTONE_GUARD_MODE = "warn"; // Default mode: warn (recommended)
+  let __BIZTONE_WARNING_SHOWN = false;
+  let __BIZTONE_FORM_CLEANUP = null; // Store form prevention cleanup function
+  
+  // Message processing state to prevent duplicates
+  let __BIZTONE_LAST_MESSAGE_TS = 0;
+  let __BIZTONE_LAST_MESSAGE_TYPE = null;
 
   // Initialize cache and regex
   const guardCache = new Map();
@@ -89,8 +104,25 @@
    */
   function isExtensionContextValid() {
     try {
-      return !!(chrome && chrome.runtime && chrome.runtime.id);
+      // Check all essential runtime APIs
+      if (!chrome || !chrome.runtime) return false;
+      
+      // Check runtime.id (fails when extension is invalidated)
+      if (!chrome.runtime.id) return false;
+      
+      // Test runtime.getURL with a safe path
+      try {
+        chrome.runtime.getURL('manifest.json');
+      } catch {
+        return false;
+      }
+      
+      // Test sendMessage availability
+      if (typeof chrome.runtime.sendMessage !== 'function') return false;
+      
+      return true;
     } catch (error) {
+      console.debug("[BizTone] Extension context check failed:", error);
       return false;
     }
   }
@@ -165,6 +197,27 @@
   }
 
   /**
+   * Get current guard mode setting from background
+   */
+  async function getGuardMode() {
+    try {
+      const response = await chrome.runtime.sendMessage({
+        type: MESSAGE_TYPES.BIZTONE_GET_GUARD_MODE
+      });
+      
+      if (response?.ok && response.result?.guardMode) {
+        __BIZTONE_GUARD_MODE = response.result.guardMode;
+        console.debug(`[BizTone] Guard mode loaded: ${__BIZTONE_GUARD_MODE}`);
+      }
+    } catch (error) {
+      console.warn('[BizTone] Failed to get guard mode, using default:', error);
+      __BIZTONE_GUARD_MODE = "warn"; // fallback to default
+    }
+    
+    return __BIZTONE_GUARD_MODE;
+  }
+
+  /**
    * Dispatches synthetic Enter key events with enhanced submit support
    */
   function dispatchEnterKey() {
@@ -203,12 +256,121 @@
     }
   }
 
+  // ==================== DOMAIN RULES SUPPORT ====================
+  
+  /**
+   * Get current domain from window location
+   */
+  function getCurrentDomain() {
+    try {
+      return window.location.hostname.toLowerCase();
+    } catch (error) {
+      console.warn('[BizTone] Failed to get current domain:', error);
+      return null;
+    }
+  }
+
+  /**
+   * Checks if the current element is a search input
+   */
+  function isSearchElement(element) {
+    if (!element) return false;
+    
+    // Check input type
+    if (element.tagName === 'INPUT' && element.type === 'search') return true;
+    
+    // Check common search input patterns
+    const searchPatterns = [
+      /search/i,
+      /query/i,
+      /찾기/i,
+      /검색/i
+    ];
+    
+    const name = element.name || '';
+    const id = element.id || '';
+    const className = element.className || '';
+    const placeholder = element.placeholder || '';
+    
+    return searchPatterns.some(pattern => 
+      pattern.test(name) || 
+      pattern.test(id) || 
+      pattern.test(className) || 
+      pattern.test(placeholder)
+    );
+  }
+
+  /**
+   * Prevents form submission for search elements
+   */
+  function preventSearchFormSubmission(element) {
+    if (!element) return null;
+    
+    const form = element.form || element.closest('form');
+    if (!form) return null;
+    
+    // Add temporary submit prevention
+    const preventSubmit = (e) => {
+      console.log('🚫 [BizTone] Preventing search form submission during processing');
+      e.preventDefault();
+      e.stopImmediatePropagation();
+      return false;
+    };
+    
+    form.addEventListener('submit', preventSubmit, true);
+    
+    // Return cleanup function
+    return () => {
+      form.removeEventListener('submit', preventSubmit, true);
+    };
+  }
+  
+  /**
+   * Check if guard should be disabled for current domain
+   */
+  async function shouldDisableGuardForDomain() {
+    const domain = getCurrentDomain();
+    if (!domain) return false;
+    
+    try {
+      const response = await chrome.runtime.sendMessage({
+        type: 'BIZTONE_GET_DOMAIN_STATUS',
+        domain: domain
+      });
+      
+      if (response && response.ok && response.result) {
+        const status = response.result;
+        
+        // Check if domain is disabled
+        if (!status.enabled) {
+          console.log(`[BizTone] 🔇 Domain ${domain} is disabled`);
+          return true;
+        }
+        
+        // Check if domain is paused
+        if (status.paused) {
+          console.log(`[BizTone] ⏸️ Domain ${domain} is paused (${status.pauseRemaining} min remaining)`);
+          return true;
+        }
+        
+        console.debug(`[BizTone] ✅ Domain ${domain} is enabled`);
+        return false;
+      } else {
+        console.warn('[BizTone] Failed to get domain status, defaulting to enabled');
+        return false; // Default to enabled on error
+      }
+    } catch (error) {
+      console.warn('[BizTone] Error checking domain rules:', error);
+      return false; // Default to enabled on error
+    }
+  }
+
   // ==================== RISK ASSESSMENT SYSTEM ====================
 
   // ==================== LEGACY RISK ASSESSMENT (KEPT FOR REFERENCE) ====================
   
   /**
-   * Basic risk assessment with local whitelist support
+   * Enhanced basic risk assessment with detailed risk factors
    * Used for synchronous prefiltering to prevent race conditions
    */
   function calculateBasicRiskScore(text) {
@@ -221,48 +383,78 @@
           matches: [],
           contextual: { score: 0, factors: [] },
           whitelisted: true,
-          isAdvanced: false
+          isAdvanced: false,
+          riskFactors: {}
         };
       }
     }
 
     let score = 0;
+    const riskFactors = {};
 
-    // 1) Profanity/offensive language - Increased score for better detection
+    // 1) Profanity/offensive language - Strong weight
     if (profanityRegex.test(text)) {
-      score += 3; // Increased from 2 to 3 for more sensitive detection
+      score += 4; // Stronger penalty for profanity
+      riskFactors.profanity = true;
       console.debug("[BizTone] Profanity detected:", text, "Score:", score);
     }
 
     // 2) Aggressive/rude vocabulary
-    let vocabularyHits = 0;
-    for (const word of [...RISK_VOCABULARY.AGGRESSIVE, ...RISK_VOCABULARY.RUDE]) {
-      if (text.includes(word)) vocabularyHits++;
+    let aggressiveHits = 0;
+    for (const word of RISK_VOCABULARY.AGGRESSIVE) {
+      if (text.includes(word)) aggressiveHits++;
     }
-    score += Math.min(2, vocabularyHits);
+    if (aggressiveHits > 0) {
+      score += Math.min(2, aggressiveHits);
+      riskFactors.aggressive = true;
+    }
 
-    // 3) Excessive punctuation
+    // 3) Rude vocabulary
+    let rudeHits = 0;
+    for (const word of RISK_VOCABULARY.RUDE) {
+      if (text.includes(word)) rudeHits++;
+    }
+    if (rudeHits > 0) {
+      score += Math.min(1, rudeHits);
+      riskFactors.rude = true;
+    }
+
+    // 4) Excessive punctuation
     const exclamationCount = (text.match(/!+/g) || []).length;
     const questionCount = (text.match(/\?+/g) || []).length;
-    if (exclamationCount >= 2) score += 1;
-    if (questionCount >= 2) score += 1;
-    if (text.includes("?!") || text.includes("!?")) score += 1;
+    if (exclamationCount >= 2 || questionCount >= 2 || text.includes("?!") || text.includes("!?")) {
+      score += 1;
+      riskFactors.punctuation = true;
+    }
 
-    // 4) Excessive uppercase (English)
+    // 5) Excessive uppercase (English)
     const letters = (text.match(/[A-Za-z]/g) || []);
     const uppercase = (text.match(/[A-Z]/g) || []);
-    if (letters.length >= 6 && uppercase.length / letters.length >= 0.5) score += 1;
-    if (/\b[A-Z]{4,}\b/.test(text)) score += 1;
+    if ((letters.length >= 6 && uppercase.length / letters.length >= 0.5) || /\b[A-Z]{4,}\b/.test(text)) {
+      score += 1;
+      riskFactors.uppercase = true;
+    }
 
-    // 5) Imperative endings (Korean)
-    if (/[가-힣]{2,}해라\b|[가-힣]{2,}하라\b/.test(text)) score += 1;
+    // 6) Imperative endings (Korean)
+    if (/[가-힣]{2,}해라\b|[가-힣]{2,}하라\b/.test(text)) {
+      score += 1;
+      riskFactors.imperative = true;
+    }
+
+    // 7) Urgency words
+    const urgencyWords = ["당장", "빨리", "지금", "ASAP", "즉시"];
+    if (urgencyWords.some(word => text.includes(word))) {
+      score += 0.5;
+      riskFactors.urgency = true;
+    }
 
     return {
-      score,
+      score: Math.round(score * 10) / 10, // Round to 1 decimal
       matches: [],
       contextual: { score: 0, factors: [] },
       whitelisted: false,
-      isAdvanced: false
+      isAdvanced: false,
+      riskFactors
     };
   }
 
@@ -307,11 +499,20 @@
    */
   function getCurrentTextContext() {
     const activeElement = document.activeElement;
+    console.log(`🎯 [BizTone] Checking active element:`, {
+      tagName: activeElement?.tagName,
+      type: activeElement?.type,
+      role: activeElement?.getAttribute('role'),
+      contentEditable: activeElement?.contentEditable,
+      className: activeElement?.className,
+      value: activeElement?.value,
+      textContent: activeElement?.textContent?.slice(0, 50)
+    });
     
     // Handle input/textarea elements
     if (activeElement && 
         (activeElement.tagName === "TEXTAREA" || 
-         (activeElement.tagName === "INPUT" && activeElement.type === "text"))) {
+         (activeElement.tagName === "INPUT" && (activeElement.type === "text" || activeElement.type === "search")))) {
       
       const { selectionStart, selectionEnd } = activeElement;
       const hasSelection = typeof selectionStart === "number" && 
@@ -333,7 +534,36 @@
       };
     }
 
+    // Handle div with role="textbox" (common in modern web apps)
+    if (activeElement && activeElement.getAttribute('role') === 'textbox') {
+      return { 
+        text: activeElement.innerText || activeElement.textContent || "", 
+        mode: "full", 
+        element: activeElement 
+      };
+    }
+
     // Handle contentEditable elements
+    if (activeElement && activeElement.contentEditable === 'true') {
+      const selection = window.getSelection && window.getSelection();
+      const hasSelection = selection && selection.rangeCount > 0 && String(selection).length > 0;
+      
+      if (hasSelection) {
+        return { 
+          text: String(selection), 
+          mode: "selection", 
+          element: activeElement 
+        };
+      }
+      
+      return { 
+        text: activeElement.innerText || activeElement.textContent || "", 
+        mode: "full", 
+        element: activeElement 
+      };
+    }
+
+    // Global selection fallback
     const selection = window.getSelection && window.getSelection();
     const hasSelection = selection && selection.rangeCount > 0 && String(selection).length > 0;
     
@@ -345,8 +575,8 @@
       };
     }
 
-    // Fallback to contentEditable host
-    const editableHost = document.querySelector("[contenteditable=''], [contenteditable='true']");
+    // Fallback to any contentEditable in document
+    const editableHost = document.querySelector("[contenteditable='true'], [role='textbox']");
     if (editableHost) {
       return { 
         text: editableHost.innerText || editableHost.textContent || "", 
@@ -436,6 +666,7 @@
    * @returns {boolean} Success status
    */
   function replaceSelectedText(newText) {
+    console.log(`🔄 replaceSelectedText called with: "${newText?.slice(0, 50)}..."`);    
     let replaced = false;
 
     // Handle input/textarea selection
@@ -444,10 +675,12 @@
       const { start, end, value } = lastInputSelection;
       
       if (typeof start === "number" && typeof end === "number") {
+        console.log(`📝 Replacing input text: [${start}-${end}] "${value.slice(start, end)}" → "${newText.slice(0, 30)}..."`);        
         element.value = value.slice(0, start) + newText + value.slice(end);
         element.selectionStart = element.selectionEnd = start + newText.length;
         dispatchInputEvents(element);
         replaced = true;
+        console.log(`✅ Input replacement successful`);
       }
     }
 
@@ -487,14 +720,32 @@
           }
           
           replaced = true;
+          console.log(`✅ ContentEditable replacement successful`);
         }
       } catch (error) {
-        // Selection replacement failed
+        console.log(`❌ ContentEditable replacement failed:`, error);
       }
     }
-
+    
+    console.log(`🔄 replaceSelectedText result: ${replaced}`);
     return replaced;
   }
+  
+  // Global function for manual testing from browser console
+  window.testBizToneReplace = function(text = '안녕하세요, 잘 부탁드립니다.') {
+    console.log('🛠️ Manual REPLACE_WITH test triggered');
+    if (window.chrome?.runtime?.sendMessage) {
+      // This won't work from content script, but shows the attempt
+      console.log('💫 Attempting direct message simulation...');
+    }
+    
+    // Direct function test
+    const result = replaceSelectedText(text);
+    console.log(`🛠️ Direct function test result: ${result}`);
+    return result;
+  };
+  
+  console.log('🛠️ Run testBizToneReplace() in console to test text replacement directly');
 
   // ==================== UI COMPONENTS ====================
 
@@ -688,10 +939,23 @@
         replaceButton.textContent = "교체됨 ✔";
         setTimeout(removeBubble, 800);
       } else {
-        // Fallback to copy
-        navigator.clipboard.writeText(text).then(() => {
-          replaceButton.textContent = "복사됨 ✔";
-        });
+        // Fallback to copy with proper focus handling
+        try {
+          if (document.hasFocus && !document.hasFocus()) {
+            window.focus();
+            setTimeout(() => {
+              navigator.clipboard.writeText(text)
+                .then(() => { replaceButton.textContent = "복사됨 ✔"; })
+                .catch(() => { replaceButton.textContent = "복사 실패"; });
+            }, 50);
+          } else {
+            navigator.clipboard.writeText(text).then(() => {
+              replaceButton.textContent = "복사됨 ✔";
+            });
+          }
+        } catch (error) {
+          replaceButton.textContent = "복사 실패";
+        }
       }
     });
   }
@@ -716,13 +980,112 @@
     });
   }
 
+  /**
+   * Shows warning bubble for warn mode
+   * @param {string} text - Original text that triggered warning
+   * @param {string} riskReason - Reason for the warning
+   * @param {Object} riskInfo - Additional risk information
+   */
+  function showWarningBubble(text, riskReason = "감정적인 표현이 감지되었습니다", riskInfo = {}) {
+    const escapedText = text.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
+    const shortText = escapedText.length > 100 ? escapedText.slice(0, 100) + "..." : escapedText;
+    
+    // Generate risk tags based on detected patterns
+    let riskTags = '';
+    if (riskInfo.profanity) riskTags += '<span class="risk-tag risk-profanity">욕설</span>';
+    if (riskInfo.aggressive) riskTags += '<span class="risk-tag risk-aggressive">공격적</span>';
+    if (riskInfo.punctuation) riskTags += '<span class="risk-tag risk-punctuation">과도한 구두점</span>';
+    if (riskInfo.uppercase) riskTags += '<span class="risk-tag risk-uppercase">대문자 남용</span>';
+    
+    const html = `
+      <div class="biztone-warning">⚠️ ${riskReason}</div>
+      <div class="biztone-original-text">"${shortText}"</div>
+      ${riskTags ? `<div class="risk-tags">${riskTags}</div>` : ''}
+      <div class="biztone-actions">
+        <button class="biztone-btn biztone-btn-primary" id="biztone-send-anyway">그래도 보내기</button>
+        <button class="biztone-btn" id="biztone-edit-text">수정하기</button>
+        <button class="biztone-btn" id="biztone-convert-option">정중화</button>
+      </div>
+      <div class="biztone-tip">💡 수정: 입력창으로 돌아가기 • 정중화: AI가 정중한 표현으로 변환</div>
+    `;
+    
+    showBubble(html, false);
+
+    // Setup action buttons
+    const sendButton = bubbleElement.querySelector("#biztone-send-anyway");
+    const editButton = bubbleElement.querySelector("#biztone-edit-text");
+    const convertButton = bubbleElement.querySelector("#biztone-convert-option");
+
+    sendButton.addEventListener("click", () => {
+      removeBubble();
+      __BIZTONE_WARNING_SHOWN = true; // Mark warning as acknowledged
+      // Cleanup form prevention when user chooses to send anyway
+      if (__BIZTONE_FORM_CLEANUP) {
+        __BIZTONE_FORM_CLEANUP();
+        __BIZTONE_FORM_CLEANUP = null;
+      }
+      setCachedResult(text, { mode: "warning_acknowledged", originalText: text });
+      showToast("다음 Enter 키로 원본 전송됩니다");
+    });
+
+    editButton.addEventListener("click", () => {
+      removeBubble();
+      // Focus back to the input element for manual editing
+      const activeElement = document.activeElement;
+      if (activeElement && (activeElement.tagName === 'TEXTAREA' || activeElement.tagName === 'INPUT' || activeElement.contentEditable === 'true')) {
+        activeElement.focus();
+        // Move cursor to end
+        if (activeElement.setSelectionRange) {
+          const len = activeElement.value?.length || 0;
+          activeElement.setSelectionRange(len, len);
+        }
+      }
+      showToast("입력창에서 내용을 수정해주세요");
+    });
+
+    convertButton.addEventListener("click", async () => {
+      removeBubble();
+      showLoadingBubble();
+      
+      // Request conversion
+      safeSendMessage({
+        type: MESSAGE_TYPES.BIZTONE_CONVERT_TEXT,
+        text: text
+      }, (response) => {
+        // Cleanup form prevention when conversion is done
+        if (__BIZTONE_FORM_CLEANUP) {
+          __BIZTONE_FORM_CLEANUP();
+          __BIZTONE_FORM_CLEANUP = null;
+        }
+        
+        if (response && response.ok && response.result) {
+          const textContext = getCurrentTextContext();
+          const selectedReplaced = (textContext.mode === "selection" && 
+                                   typeof replaceSelectedText === "function") ? 
+                                   replaceSelectedText(response.result) : false;
+          const replaced = selectedReplaced || replaceFullText(response.result);
+          
+          removeBubble();
+          if (replaced) {
+            showToast("변환 완료 — Enter를 다시 누르면 전송됩니다.");
+          } else {
+            showResultBubble(response.result);
+          }
+        } else {
+          removeBubble();
+          showErrorBubble("변환에 실패했습니다. 다시 시도해 주세요.");
+        }
+      });
+    });
+  }
+
   // ==================== GUARD SYSTEM ====================
 
   /**
    * Main keydown guard handler with race condition prevention
    * @param {KeyboardEvent} event - Keyboard event
    */
-  function onKeyDownGuard(event) {
+  async function onKeyDownGuard(event) {
     if (event.isComposing) return; // Ignore composition events
     
     // Enhanced Enter key detection (including NumpadEnter)
@@ -742,21 +1105,47 @@
         return;
       }
       
+      // Check domain-based guard rules
+      if (await shouldDisableGuardForDomain()) {
+        console.debug("[BizTone] Guard disabled for current domain");
+        return;
+      }
+      
       // If extension context is invalid, disable guard and allow normal operation
       if (!isExtensionContextValid()) {
-        console.warn("[BizTone] Extension context invalid - guard disabled");
+        console.debug("[BizTone] Extension context invalid - guard disabled");
         return; // Allow normal send behavior
       }
 
       // Get current text context
       const textContext = getCurrentTextContext();
       const normalizedText = normalizeText(textContext.text);
-      console.debug("[BizTone] Text context:", { mode: textContext.mode, text: normalizedText, element: textContext.element?.tagName });
+      const isSearch = isSearchElement(textContext.element || document.activeElement);
+      
+      console.log(`🔍 [BizTone] Text extraction:`, { 
+        mode: textContext.mode, 
+        originalText: textContext.text, 
+        normalizedText: normalizedText, 
+        element: textContext.element?.tagName,
+        activeElement: document.activeElement?.tagName,
+        selectionLength: window.getSelection()?.toString()?.length || 0,
+        isSearchElement: isSearch
+      });
       
       if (!normalizedText) {
-        console.debug("[BizTone] Empty text, allowing send");
+        console.log("❌ [BizTone] Empty text detected - allowing send");
         return; // Allow empty sends
       }
+      
+      // For search elements, prevent form submission during processing
+      if (isSearch) {
+        console.log("🔍 [BizTone] Search element detected - preventing form submission");
+        __BIZTONE_FORM_CLEANUP = preventSearchFormSubmission(textContext.element || document.activeElement);
+      }
+      
+      // Test basic profanity detection
+      const quickRisk = calculateBasicRiskScore(normalizedText);
+      console.log(`📊 [BizTone] Quick risk assessment:`, quickRisk);
 
       // Check cache first
       const cachedResult = getCachedResult(normalizedText);
@@ -765,6 +1154,12 @@
         event.stopImmediatePropagation();
         
         if (cachedResult.mode === "send") {
+          dispatchEnterKey();
+          return;
+        }
+        
+        // Handle cached warning acknowledgment
+        if (cachedResult.mode === "warning_acknowledged") {
           dispatchEnterKey();
           return;
         }
@@ -794,6 +1189,10 @@
 
       // If safe, allow immediate send without blocking
       if (quickKind === "pass") {
+        if (__BIZTONE_FORM_CLEANUP) {
+          __BIZTONE_FORM_CLEANUP();
+          __BIZTONE_FORM_CLEANUP = null;
+        }
         setCachedResult(normalizedText, { mode: "send" });
         return; // Don't prevent default - allow normal send
       }
@@ -802,6 +1201,10 @@
       event.preventDefault();
       event.stopImmediatePropagation();
 
+      // Get guard mode setting first
+      const guardMode = await getGuardMode();
+      console.debug(`[BizTone] Guard mode: ${guardMode}`);
+      
       // Now get enhanced assessment from background for precision
       safeSendMessage({
         type: "BIZTONE_ADVANCED_RISK", 
@@ -823,37 +1226,124 @@
           finalRisk.score <= CONFIG.PREFILTER.PASS_MAX ? "pass" :
           finalRisk.score >= CONFIG.PREFILTER.CONVERT_MIN ? "convert" : "prompt";
 
+        console.log(`🎯 [BizTone] Final decision:`, {
+          score: finalRisk.score,
+          whitelisted: finalRisk.whitelisted,
+          passMax: CONFIG.PREFILTER.PASS_MAX,
+          convertMin: CONFIG.PREFILTER.CONVERT_MIN,
+          finalKind: finalKind,
+          guardMode: guardMode
+        });
+
         // 1) Low risk after advanced assessment: allow send
         if (finalKind === "pass") {
+          console.log("✅ [BizTone] Allowing send (low risk)");
+          if (__BIZTONE_FORM_CLEANUP) {
+            __BIZTONE_FORM_CLEANUP();
+            __BIZTONE_FORM_CLEANUP = null;
+          }
           setCachedResult(normalizedText, { mode: "send" });
           dispatchEnterKey();
           return;
         }
         
-        // 2) High risk: direct conversion without prompt
+        // 2) High risk: handle based on guard mode
         if (finalKind === "convert") {
-          safeSendMessage({
-            type: MESSAGE_TYPES.BIZTONE_CONVERT_TEXT,
-            text: normalizedText
-          }, (convertResponse) => {
-            if (!convertResponse || !convertResponse.ok || !convertResponse.result) {
-              const errorMsg = "보내기 보호: 변환 실패 — 다시 시도하거나 문장을 완화해 주세요.";
-              showToast(errorMsg);
+          console.log(`🔥 [BizTone] High risk detected (convert case)`, { guardMode });
+          if (guardMode === "warn") {
+            // Warning mode: Show warning bubble instead of auto-converting
+            console.log("⚠️ [BizTone] Showing warning bubble");
+            const riskMessage = finalRisk.score >= 4 ? "강한 표현이 감지되었습니다" : "위험한 표현이 감지되었습니다";
+            showWarningBubble(normalizedText, riskMessage, finalRisk.riskFactors || {});
+            setCachedResult(normalizedText, { mode: "warning_shown", originalText: normalizedText });
+            return;
+          } else {
+            // Convert mode: Auto-convert (existing behavior)
+            console.log("🔄 [BizTone] Auto-converting text");
+            safeSendMessage({
+              type: MESSAGE_TYPES.BIZTONE_CONVERT_TEXT,
+              text: normalizedText
+            }, (convertResponse) => {
+              // Always cleanup form prevention when processing is done
+              if (__BIZTONE_FORM_CLEANUP) {
+                __BIZTONE_FORM_CLEANUP();
+                __BIZTONE_FORM_CLEANUP = null;
+              }
               
-              // Configurable fail-safe: don't auto-send on conversion failure by default
-              if (CONFIG.GUARD.FAIL_OPEN_ON_CONVERT_ERROR) {
-                console.debug("[BizTone] Fail-open on conversion error enabled, allowing send");
+              if (!convertResponse || !convertResponse.ok || !convertResponse.result) {
+                const errorMsg = "보내기 보호: 변환 실패 — 다시 시도하거나 문장을 완화해 주세요.";
+                showToast(errorMsg);
+                
+                // Configurable fail-safe: don't auto-send on conversion failure by default
+                if (CONFIG.GUARD.FAIL_OPEN_ON_CONVERT_ERROR) {
+                  console.debug("[BizTone] Fail-open on conversion error enabled, allowing send");
+                  dispatchEnterKey();
+                }
+                return;
+              }
+              
+              setCachedResult(normalizedText, { mode: "convert", converted: convertResponse.result });
+              
+              const selectedReplaced = (textContext.mode === "selection" && 
+                                       typeof replaceSelectedText === "function") ? 
+                                       replaceSelectedText(convertResponse.result) : false;
+              const replaced = selectedReplaced || replaceFullText(convertResponse.result);
+              
+              if (CONFIG.GUARD.AUTO_SEND_CONVERTED && replaced) {
                 dispatchEnterKey();
+              } else if (replaced) {
+                showToast("변환 완료 — Enter를 다시 누르면 전송됩니다.");
+              }
+            });
+          }
+          return;
+        }
+        
+        // 3) Medium risk: handle based on guard mode
+        console.log(`⚡ [BizTone] Medium risk detected (prompt case)`, { guardMode });
+        if (guardMode === "warn") {
+          // Warning mode: Show warning for medium risk too
+          console.log("⚠️ [BizTone] Showing warning bubble for medium risk");
+          // Don't cleanup form prevention yet - user needs to make a choice
+          showWarningBubble(normalizedText, "주의가 필요한 표현이 감지되었습니다", finalRisk.riskFactors || {});
+          setCachedResult(normalizedText, { mode: "warning_shown", originalText: normalizedText });
+        } else {
+          // Convert mode: Use AI decision (existing behavior)
+          console.log("🤖 [BizTone] Using AI decision");
+          safeSendMessage({
+            type: MESSAGE_TYPES.BIZTONE_GUARD_DECIDE,
+            text: normalizedText
+          }, (decisionResponse) => {
+            // Always cleanup form prevention when processing is done
+            if (__BIZTONE_FORM_CLEANUP) {
+              __BIZTONE_FORM_CLEANUP();
+              __BIZTONE_FORM_CLEANUP = null;
+            }
+            
+            if (!decisionResponse || !decisionResponse.ok) {
+              // Configurable fail-safe for decision errors (default: allow send for UX)
+              if (CONFIG.GUARD.FAIL_OPEN_ON_DECISION_ERROR) {
+                console.debug("[BizTone] Decision failure, fail-open policy allows send");
+                dispatchEnterKey();
+              } else {
+                showToast("보내기 보호: 판정 실패 — 다시 시도해 주세요.");
               }
               return;
             }
             
-            setCachedResult(normalizedText, { mode: "convert", converted: convertResponse.result });
+            if (decisionResponse.action === "send") {
+              setCachedResult(normalizedText, { mode: "send" });
+              dispatchEnterKey();
+              return;
+            }
+            
+            const convertedText = decisionResponse.converted_text || normalizedText;
+            setCachedResult(normalizedText, { mode: "convert", converted: convertedText });
             
             const selectedReplaced = (textContext.mode === "selection" && 
                                      typeof replaceSelectedText === "function") ? 
-                                     replaceSelectedText(convertResponse.result) : false;
-            const replaced = selectedReplaced || replaceFullText(convertResponse.result);
+                                     replaceSelectedText(convertedText) : false;
+            const replaced = selectedReplaced || replaceFullText(convertedText);
             
             if (CONFIG.GUARD.AUTO_SEND_CONVERTED && replaced) {
               dispatchEnterKey();
@@ -861,49 +1351,15 @@
               showToast("변환 완료 — Enter를 다시 누르면 전송됩니다.");
             }
           });
-          return;
         }
-        
-        // 3) Medium risk: use AI decision prompt
-        safeSendMessage({
-          type: MESSAGE_TYPES.BIZTONE_GUARD_DECIDE,
-          text: normalizedText
-        }, (decisionResponse) => {
-          if (!decisionResponse || !decisionResponse.ok) {
-            // Configurable fail-safe for decision errors (default: allow send for UX)
-            if (CONFIG.GUARD.FAIL_OPEN_ON_DECISION_ERROR) {
-              console.debug("[BizTone] Decision failure, fail-open policy allows send");
-              dispatchEnterKey();
-            } else {
-              showToast("보내기 보호: 판정 실패 — 다시 시도해 주세요.");
-            }
-            return;
-          }
-          
-          if (decisionResponse.action === "send") {
-            setCachedResult(normalizedText, { mode: "send" });
-            dispatchEnterKey();
-            return;
-          }
-          
-          const convertedText = decisionResponse.converted_text || normalizedText;
-          setCachedResult(normalizedText, { mode: "convert", converted: convertedText });
-          
-          const selectedReplaced = (textContext.mode === "selection" && 
-                                   typeof replaceSelectedText === "function") ? 
-                                   replaceSelectedText(convertedText) : false;
-          const replaced = selectedReplaced || replaceFullText(convertedText);
-          
-          if (CONFIG.GUARD.AUTO_SEND_CONVERTED && replaced) {
-            dispatchEnterKey();
-          } else if (replaced) {
-            showToast("변환 완료 — Enter를 다시 누르면 전송됩니다.");
-          }
-        });
       });
 
-    } finally {
-      // Always clear pending state
+    } catch (error) {
+      console.error("[BizTone] Guard system error:", error);
+      if (__BIZTONE_FORM_CLEANUP) {
+        __BIZTONE_FORM_CLEANUP();
+        __BIZTONE_FORM_CLEANUP = null;
+      }
       clearPendingGuard();
     }
   }
@@ -930,8 +1386,13 @@
 
   // Message handler with extension context validation
   if (isExtensionContextValid()) {
+    console.log(`📟 Message listener installed in ${window.self === window.top ? 'TOP-FRAME' : 'IFRAME'}`);
+    
     chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
       if (!message?.type) return;
+      
+      // Log all incoming messages for debugging
+      console.log(`📬 Incoming message: ${message.type} in ${window.self === window.top ? 'TOP-FRAME' : 'IFRAME'}`);
 
       switch (message.type) {
         case MESSAGE_TYPES.BIZTONE_PING:
@@ -947,6 +1408,26 @@
           break;
 
         case MESSAGE_TYPES.BIZTONE_REPLACE_WITH:
+          // Prevent duplicate message processing
+          const now = Date.now();
+          const frameInfo = window.self === window.top ? 'TOP-FRAME' : 'IFRAME';
+          
+          // Log debug info from background script
+          if (message.__debug_info) {
+            console.log(`📨 Background Debug Info:`, message.__debug_info);
+            console.log(`🕰️ Message travel time: ${now - message.__debug_info.timestamp}ms`);
+          }
+          
+          console.log(`🎯 REPLACE_WITH message received in ${frameInfo} at ${now} (text: "${message.text?.slice(0, 30)}...")`);
+          
+          if (__BIZTONE_LAST_MESSAGE_TYPE === message.type && now - __BIZTONE_LAST_MESSAGE_TS < 500) {
+            console.warn(`❌ DUPLICATE REPLACE_WITH message ignored in ${frameInfo}! Gap: ${now - __BIZTONE_LAST_MESSAGE_TS}ms`);
+            return;
+          }
+          __BIZTONE_LAST_MESSAGE_TS = now;
+          __BIZTONE_LAST_MESSAGE_TYPE = message.type;
+          console.log(`✅ Processing REPLACE_WITH message in ${frameInfo} (gap: ${__BIZTONE_LAST_MESSAGE_TS ? now - __BIZTONE_LAST_MESSAGE_TS : 'first'}ms)`);
+          
           // Direct replacement from keyboard shortcut - no UI needed
           const activeElement = document.activeElement;
           lastActiveElement = activeElement || null;
@@ -970,17 +1451,35 @@
             }
           }
           
+          console.log(`🔧 Attempting to replace selected text...`);
           const replaced = replaceSelectedText(message.text || "");
+          console.log(`🔧 Text replacement result: ${replaced ? 'SUCCESS' : 'FAILED'}`);
           if (replaced) {
             // Show brief success toast instead of bubble
+            console.log(`✅ Text successfully replaced, showing toast`);
             showToast("변환 완료");
           } else {
-            // Fallback to clipboard
+            console.log(`❌ Text replacement failed, falling back to clipboard`);
+            // Fallback to clipboard with proper focus handling
             try {
-              navigator.clipboard.writeText(message.text || "");
-              showToast("클립보드에 복사됨");
+              // Ensure document is focused for clipboard access
+              if (document.hasFocus && !document.hasFocus()) {
+                window.focus();
+                // Brief delay to allow focus to take effect
+                setTimeout(() => {
+                  navigator.clipboard.writeText(message.text || "")
+                    .then(() => showToast("클립보드에 복사됨"))
+                    .catch(() => showToast("클립보드 복사 실패"));
+                }, 50);
+              } else {
+                navigator.clipboard.writeText(message.text || "")
+                  .then(() => showToast("클립보드에 복사됨"))
+                  .catch(() => showToast("클립보드 복사 실패"));
+              }
             } catch (error) {
-              showToast("변환 실패");
+              // Final fallback: show text in toast for manual copy
+              console.log(`❌ Clipboard access failed:`, error);
+              showToast(`변환 결과: ${message.text}`);
             }
           }
           break;
@@ -992,5 +1491,6 @@
     });
   }
 
-  console.debug("[BizTone ContentScript] Initialized with hybrid guard system");
+  const initFrameInfo = window.self === window.top ? 'TOP-FRAME' : `IFRAME(${window.location.href})`;
+  console.debug(`[BizTone ContentScript] Initialized with hybrid guard system in ${initFrameInfo}`);
 })();
