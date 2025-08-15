@@ -3,20 +3,6 @@
  본 문서는 BizTone 확장프로그램의 우선 개선 항목을 다른 개발자/AI가 바로 구현할 수 있도록 요구사항을 정리한 TODO입니다. 각 항목은 범위, 저장소 키, UI/UX, 동작 로직, 수용 기준(AC)을 포함합니다.
 
 
- ---
-
- ## 2) 도메인별 확장 활성/비활성 설정
- - 목적: 특정 사이트에서 가드를 끄거나(비활성) 정책을 다르게 적용.
- - 저장 키: `BIZTONE_DOMAIN_RULES` (예: `{ "slack.com": { enabled: true, mode: "guard", pauseUntil: 0 } }`).
-   - `enabled`: boolean, `mode`: "guard"|"off"(v1 간단 버전), `pauseUntil`: epoch(ms) 일시중지 종료시각.
- - UI/UX(옵션):
-   - 도메인 테이블: [도메인, ON/OFF 토글, 일시중지(15/30/60분), 삭제].
-   - 현재 탭 도메인 자동 입력/추가 버튼(향후 확장).
- - 컨텐츠 스크립트/백그라운드:
-   - 현재 페이지 호스트를 읽어 enabled=false 또는 pauseUntil>now 이면 Guard 전체 비활성 처리.
- - 수용 기준(AC):
-   - `example.com`을 OFF로 저장하면 해당 도메인에서 Enter 가드가 동작하지 않음.
-   - 일시중지 설정 시 만료 후 자동 복구.
 
  ---
 

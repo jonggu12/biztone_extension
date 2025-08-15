@@ -120,10 +120,10 @@ function displayDomainRules(rules) {
             <div style="font-size: 12px; color: ${statusColor}; margin-top: 2px;">${statusText}</div>
           </div>
           <div style="display: flex; gap: 6px;">
-            <button onclick="toggleDomainRule('${domain}')" style="font-size: 11px; padding: 4px 8px;">
+            <button class="toggle-domain-btn" data-domain="${domain}" style="font-size: 11px; padding: 4px 8px;">
               ${rule.enabled !== false ? '끄기' : '켜기'}
             </button>
-            <button onclick="removeDomainRule('${domain}')" style="font-size: 11px; padding: 4px 8px; background: #ef4444; color: white;">
+            <button class="remove-domain-btn" data-domain="${domain}" style="font-size: 11px; padding: 4px 8px; background: #ef4444; color: white;">
               삭제
             </button>
           </div>
@@ -133,6 +133,21 @@ function displayDomainRules(rules) {
   });
   
   container.innerHTML = html;
+  
+  // Add event listeners to dynamically created buttons
+  container.querySelectorAll('.toggle-domain-btn').forEach(button => {
+    button.addEventListener('click', async () => {
+      const domain = button.getAttribute('data-domain');
+      await toggleDomainRule(domain);
+    });
+  });
+  
+  container.querySelectorAll('.remove-domain-btn').forEach(button => {
+    button.addEventListener('click', async () => {
+      const domain = button.getAttribute('data-domain');
+      await removeDomainRule(domain);
+    });
+  });
 }
 
 /**
@@ -246,4 +261,12 @@ document.getElementById("openGuide").addEventListener("click", () => {
   chrome.tabs.create({ url: "https://platform.openai.com/docs/quickstart" });
 });
 
-document.getElementById("validateFromBanner").addEventListener("click", validate);
+
+// Guard mode save button
+document.getElementById("saveGuardMode").addEventListener("click", () => {
+  const guardMode = document.getElementById("guardMode").value;
+  chrome.storage.sync.set({ GUARD_MODE: guardMode }, () => {
+    setStatus("감지 모드가 저장되었습니다.", true);
+    setTimeout(() => setStatus(""), 2000);
+  });
+});

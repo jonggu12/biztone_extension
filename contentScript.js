@@ -309,19 +309,35 @@
     const form = element.form || element.closest('form');
     if (!form) return null;
     
-    // Add temporary submit prevention
+    // Add comprehensive prevention
     const preventSubmit = (e) => {
       console.log('🚫 [BizTone] Preventing search form submission during processing');
       e.preventDefault();
       e.stopImmediatePropagation();
+      e.stopPropagation();
       return false;
     };
+
+    const preventKeydown = (e) => {
+      if (e.key === 'Enter' && e.target === element) {
+        console.log('🚫 [BizTone] Preventing Enter key in search during processing');
+        e.preventDefault();
+        e.stopImmediatePropagation();
+        e.stopPropagation();
+        return false;
+      }
+    };
     
+    // Add multiple event listeners for comprehensive blocking
     form.addEventListener('submit', preventSubmit, true);
+    element.addEventListener('keydown', preventKeydown, true);
+    element.addEventListener('keypress', preventKeydown, true);
     
     // Return cleanup function
     return () => {
       form.removeEventListener('submit', preventSubmit, true);
+      element.removeEventListener('keydown', preventKeydown, true);
+      element.removeEventListener('keypress', preventKeydown, true);
     };
   }
   
@@ -981,6 +997,81 @@
   }
 
   /**
+   * Shows conversion result bubble with before/after comparison
+   * @param {string} convertedText - Converted text
+   * @param {string} originalText - Original text
+   */
+  function showConversionResultBubble(convertedText, originalText) {
+    const escapedOriginal = originalText.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
+    const escapedConverted = convertedText.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
+    
+    const html = `
+      <div class="conversion-header">✨ 정중화 완료</div>
+      
+      <div class="text-comparison">
+        <div class="text-before">
+          <div class="text-label">변환 전</div>
+          <div class="text-content original">${escapedOriginal}</div>
+        </div>
+        <div class="conversion-arrow">→</div>
+        <div class="text-after">
+          <div class="text-label">변환 후</div>
+          <div class="text-content converted">${escapedConverted}</div>
+        </div>
+      </div>
+      
+      <div class="biztone-actions">
+        <button class="biztone-btn" id="biztone-use-original">원문 사용</button>
+        <button class="biztone-btn biztone-btn-primary" id="biztone-use-converted">변환문 사용</button>
+        <button class="biztone-btn" id="biztone-copy-converted">복사</button>
+      </div>
+      <div class="biztone-tip">💡 변환문 사용: 입력창에 바로 적용 • 원문 사용: 경고 없이 원문 전송</div>
+    `;
+    
+    showBubble(html, false);
+
+    // Setup action buttons
+    const useOriginalButton = bubbleElement.querySelector("#biztone-use-original");
+    const useConvertedButton = bubbleElement.querySelector("#biztone-use-converted");
+    const copyButton = bubbleElement.querySelector("#biztone-copy-converted");
+
+    useOriginalButton.addEventListener("click", () => {
+      removeBubble();
+      // Cache as warning acknowledged to allow original send - will be cleared after one use
+      setCachedResult(originalText, { mode: "warning_acknowledged", originalText: originalText });
+      showToast("다음 Enter 키로 원문 전송됩니다");
+    });
+
+    useConvertedButton.addEventListener("click", () => {
+      removeBubble();
+      
+      // Replace text with converted version
+      const textContext = getCurrentTextContext();
+      const selectedReplaced = (textContext.mode === "selection" && 
+                               typeof replaceSelectedText === "function") ? 
+                               replaceSelectedText(convertedText) : false;
+      const replaced = selectedReplaced || replaceFullText(convertedText);
+      
+      if (replaced) {
+        // Don't cache converted text to allow future detection of same profanity
+        showToast("변환 완료 — Enter를 다시 누르면 전송됩니다");
+      } else {
+        showToast("텍스트 교체 실패 - 수동으로 복사해주세요");
+      }
+    });
+
+    copyButton.addEventListener("click", async () => {
+      try {
+        await navigator.clipboard.writeText(convertedText);
+        copyButton.textContent = "복사됨 ✔";
+        setTimeout(() => (copyButton.textContent = "복사"), 1200);
+      } catch (error) {
+        showToast("클립보드 복사 실패");
+      }
+    });
+  }
+
+  /**
    * Shows warning bubble for warn mode
    * @param {string} text - Original text that triggered warning
    * @param {string} riskReason - Reason for the warning
@@ -1024,6 +1115,7 @@
         __BIZTONE_FORM_CLEANUP();
         __BIZTONE_FORM_CLEANUP = null;
       }
+      // Cache acknowledgment for ONE use only - will be cleared after use
       setCachedResult(text, { mode: "warning_acknowledged", originalText: text });
       showToast("다음 Enter 키로 원본 전송됩니다");
     });
@@ -1059,18 +1151,9 @@
         }
         
         if (response && response.ok && response.result) {
-          const textContext = getCurrentTextContext();
-          const selectedReplaced = (textContext.mode === "selection" && 
-                                   typeof replaceSelectedText === "function") ? 
-                                   replaceSelectedText(response.result) : false;
-          const replaced = selectedReplaced || replaceFullText(response.result);
-          
           removeBubble();
-          if (replaced) {
-            showToast("변환 완료 — Enter를 다시 누르면 전송됩니다.");
-          } else {
-            showResultBubble(response.result);
-          }
+          // Show conversion result in popup instead of auto-replacing
+          showConversionResultBubble(response.result, text);
         } else {
           removeBubble();
           showErrorBubble("변환에 실패했습니다. 다시 시도해 주세요.");
@@ -1147,7 +1230,7 @@
       const quickRisk = calculateBasicRiskScore(normalizedText);
       console.log(`📊 [BizTone] Quick risk assessment:`, quickRisk);
 
-      // Check cache first
+      // Check cache first - but allow re-detection for warning cases to enable repeated detection
       const cachedResult = getCachedResult(normalizedText);
       if (cachedResult) {
         event.preventDefault();
@@ -1158,24 +1241,36 @@
           return;
         }
         
-        // Handle cached warning acknowledgment
+        // Handle cached warning acknowledgment - only for single use, then clear cache
         if (cachedResult.mode === "warning_acknowledged") {
+          // Clear this cache entry after one use to allow re-detection
+          guardCache.delete(normalizeText(normalizedText));
           dispatchEnterKey();
           return;
         }
         
-        // Apply cached conversion
-        const selectedReplaced = (textContext.mode === "selection" && 
-                                 typeof replaceSelectedText === "function") ? 
-                                 replaceSelectedText(cachedResult.converted) : false;
-        const replaced = selectedReplaced || replaceFullText(cachedResult.converted);
-        
-        if (CONFIG.GUARD.AUTO_SEND_CONVERTED && replaced) {
-          dispatchEnterKey();
-        } else if (replaced) {
-          showToast("변환 완료 — Enter를 다시 누르면 전송됩니다.");
+        // For converted text cache, use it but don't prevent future detection
+        if (cachedResult.mode === "convert" && cachedResult.converted) {
+          const selectedReplaced = (textContext.mode === "selection" && 
+                                   typeof replaceSelectedText === "function") ? 
+                                   replaceSelectedText(cachedResult.converted) : false;
+          const replaced = selectedReplaced || replaceFullText(cachedResult.converted);
+          
+          if (CONFIG.GUARD.AUTO_SEND_CONVERTED && replaced) {
+            dispatchEnterKey();
+          } else if (replaced) {
+            showToast("변환 완료 — Enter를 다시 누르면 전송됩니다.");
+          }
+          // Don't return here - allow re-processing for future detections
         }
-        return;
+        
+        // For warning_shown mode, don't use cache - allow fresh detection every time
+        if (cachedResult.mode === "warning_shown") {
+          // Skip cache and proceed with fresh detection
+          console.debug("[BizTone] Skipping warning_shown cache for fresh detection");
+        } else {
+          return; // Use other cached results normally
+        }
       }
 
       // CRITICAL: Synchronous prefilter to prevent race conditions
@@ -1255,7 +1350,8 @@
             console.log("⚠️ [BizTone] Showing warning bubble");
             const riskMessage = finalRisk.score >= 4 ? "강한 표현이 감지되었습니다" : "위험한 표현이 감지되었습니다";
             showWarningBubble(normalizedText, riskMessage, finalRisk.riskFactors || {});
-            setCachedResult(normalizedText, { mode: "warning_shown", originalText: normalizedText });
+            // Don't cache warning_shown to allow repeated detection
+            console.debug("[BizTone] Warning shown - not caching to allow future detection");
             return;
           } else {
             // Convert mode: Auto-convert (existing behavior)
@@ -1282,7 +1378,8 @@
                 return;
               }
               
-              setCachedResult(normalizedText, { mode: "convert", converted: convertResponse.result });
+              // Don't cache convert results to allow repeated detection
+              console.debug("[BizTone] Conversion completed - not caching to allow future detection");
               
               const selectedReplaced = (textContext.mode === "selection" && 
                                        typeof replaceSelectedText === "function") ? 
@@ -1306,7 +1403,8 @@
           console.log("⚠️ [BizTone] Showing warning bubble for medium risk");
           // Don't cleanup form prevention yet - user needs to make a choice
           showWarningBubble(normalizedText, "주의가 필요한 표현이 감지되었습니다", finalRisk.riskFactors || {});
-          setCachedResult(normalizedText, { mode: "warning_shown", originalText: normalizedText });
+          // Don't cache warning_shown to allow repeated detection in same input field
+          console.debug("[BizTone] Warning shown for medium risk - not caching to allow future detection");
         } else {
           // Convert mode: Use AI decision (existing behavior)
           console.log("🤖 [BizTone] Using AI decision");
@@ -1338,7 +1436,8 @@
             }
             
             const convertedText = decisionResponse.converted_text || normalizedText;
-            setCachedResult(normalizedText, { mode: "convert", converted: convertedText });
+            // Don't cache convert results to allow repeated detection
+            console.debug("[BizTone] AI conversion completed - not caching to allow future detection");
             
             const selectedReplaced = (textContext.mode === "selection" && 
                                      typeof replaceSelectedText === "function") ? 

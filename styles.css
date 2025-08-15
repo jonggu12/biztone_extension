@@ -171,6 +171,79 @@
   border: 1px solid rgba(34, 197, 94, 0.3);
 }
 
+.conversion-header {
+  font-size: 14px;
+  font-weight: 600;
+  color: #10b981;
+  margin-bottom: 12px;
+  text-align: center;
+}
+
+.text-comparison {
+  margin: 12px 0;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.text-before, .text-after {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.text-label {
+  font-size: 10px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+  opacity: 0.7;
+}
+
+.text-content {
+  font-size: 12px;
+  padding: 8px;
+  border-radius: 6px;
+  line-height: 1.4;
+  word-break: break-word;
+}
+
+.text-content.original {
+  background: rgba(239, 68, 68, 0.1);
+  border: 1px solid rgba(239, 68, 68, 0.2);
+  color: #fca5a5;
+}
+
+.text-content.converted {
+  background: rgba(16, 185, 129, 0.1);
+  border: 1px solid rgba(16, 185, 129, 0.2);
+  color: #6ee7b7;
+}
+
+.conversion-arrow {
+  text-align: center;
+  font-size: 16px;
+  color: #10b981;
+  margin: 4px 0;
+}
+
+@media (min-width: 400px) {
+  .text-comparison {
+    flex-direction: row;
+    align-items: center;
+    gap: 12px;
+  }
+  
+  .text-before, .text-after {
+    flex: 1;
+  }
+  
+  .conversion-arrow {
+    flex: 0 0 auto;
+    margin: 0;
+  }
+}
+
 .biztone-tip {
   margin-top: 6px;
   font-size: 11px;
