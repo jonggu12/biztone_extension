@@ -12,7 +12,21 @@
     .row { display:flex; gap:12px; margin-top:10px; }
     button { padding:10px 14px; border-radius:8px; border:1px solid #1f2937; background:#111827; color:#fff; cursor:pointer; }
     .muted { color:#6b7280; font-size: 14px; }
-    .banner { background: linear-gradient(135deg, #f0f9ff, #e0f2fe); border: 1px solid #0ea5e9; margin-bottom: 24px; }
+    .banner { 
+      background: linear-gradient(135deg, #f0f9ff, #e0f2fe); 
+      border: 1px solid #0ea5e9; 
+      margin-bottom: 24px; 
+      transition: all 0.3s ease;
+      overflow: hidden;
+    }
+    
+    .banner.hidden {
+      max-height: 0;
+      margin: 0;
+      padding: 0;
+      opacity: 0;
+      transform: translateY(-20px);
+    }
     .banner-content { display: flex; gap: 16px; align-items: flex-start; }
     .banner-icon { font-size: 24px; margin-top: 4px; flex-shrink: 0; }
     .banner-text { flex: 1; }
@@ -29,10 +43,225 @@
       .banner-buttons { justify-content: flex-start; }
       .banner-buttons button { flex: 1; min-width: 140px; }
     }
+    
+    /* Features Overview Styles */
+    .features-overview {
+      margin-bottom: 24px;
+      background: linear-gradient(135deg, #f8fafc, #f1f5f9);
+      border: 1px solid #e2e8f0;
+    }
+    
+    .features-header {
+      text-align: center;
+      margin-bottom: 24px;
+    }
+    
+    .features-header h2 {
+      margin: 0 0 8px 0;
+      color: #1e293b;
+      font-size: 24px;
+    }
+    
+    .features-subtitle {
+      margin: 0;
+      color: #64748b;
+      font-size: 16px;
+      line-height: 1.5;
+    }
+    
+    .features-grid {
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(280px, 1fr));
+      gap: 16px;
+      margin-bottom: 24px;
+    }
+    
+    .feature-item {
+      display: flex;
+      gap: 12px;
+      padding: 16px;
+      background: white;
+      border: 1px solid #e2e8f0;
+      border-radius: 12px;
+      transition: all 0.2s ease;
+    }
+    
+    .feature-item:hover {
+      transform: translateY(-2px);
+      box-shadow: 0 8px 24px rgba(0,0,0,0.1);
+      border-color: #3b82f6;
+    }
+    
+    .feature-icon {
+      font-size: 24px;
+      width: 40px;
+      height: 40px;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      background: linear-gradient(135deg, #3b82f6, #1d4ed8);
+      border-radius: 10px;
+      flex-shrink: 0;
+    }
+    
+    .feature-content h3 {
+      margin: 0 0 4px 0;
+      color: #1e293b;
+      font-size: 16px;
+      font-weight: 600;
+    }
+    
+    .feature-content p {
+      margin: 0;
+      color: #64748b;
+      font-size: 14px;
+      line-height: 1.5;
+    }
+    
+    .features-shortcuts {
+      background: white;
+      padding: 20px;
+      border-radius: 12px;
+      border: 1px solid #e2e8f0;
+    }
+    
+    .features-shortcuts h3 {
+      margin: 0 0 16px 0;
+      color: #1e293b;
+      font-size: 18px;
+      text-align: center;
+    }
+    
+    .shortcut-grid {
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(250px, 1fr));
+      gap: 12px;
+    }
+    
+    .shortcut-item {
+      display: flex;
+      align-items: center;
+      gap: 12px;
+      padding: 12px;
+      background: #f8fafc;
+      border-radius: 8px;
+      border: 1px solid #e2e8f0;
+    }
+    
+    .shortcut-item kbd {
+      background: #1e293b;
+      color: white;
+      padding: 4px 8px;
+      border-radius: 6px;
+      font-size: 12px;
+      font-weight: 600;
+      border: 1px solid #334155;
+      box-shadow: 0 2px 4px rgba(0,0,0,0.1);
+      min-width: 140px;
+      text-align: center;
+    }
+    
+    .shortcut-item span {
+      color: #475569;
+      font-size: 14px;
+      flex: 1;
+    }
+    
+    @media (max-width: 600px) {
+      .features-grid {
+        grid-template-columns: 1fr;
+      }
+      
+      .shortcut-grid {
+        grid-template-columns: 1fr;
+      }
+      
+      .shortcut-item {
+        flex-direction: column;
+        text-align: center;
+        gap: 8px;
+      }
+      
+      .shortcut-item kbd {
+        min-width: auto;
+      }
+    }
   </style>
 </head>
 <body>
   <h1>BizTone 설정</h1>
+  
+  <!-- 기능 안내 섹션 -->
+  <div class="card features-overview">
+    <div class="features-header">
+      <h2>✨ BizTone 주요 기능</h2>
+      <p class="features-subtitle">감정적인 표현을 정중한 비즈니스 문장으로 자동 변환하는 Chrome 확장 프로그램</p>
+    </div>
+    
+    <div class="features-grid">
+      <div class="feature-item">
+        <div class="feature-icon">⚡</div>
+        <div class="feature-content">
+          <h3>실시간 감지</h3>
+          <p>타이핑 중 욕설/감정적 표현을 즉시 감지하여 시각적 경고 표시</p>
+        </div>
+      </div>
+      
+      <div class="feature-item">
+        <div class="feature-icon">🛡️</div>
+        <div class="feature-content">
+          <h3>Enter 키 가드</h3>
+          <p>메시지 전송 전 최종 검증으로 위험한 내용 차단 및 변환 옵션 제공</p>
+        </div>
+      </div>
+      
+      <div class="feature-item">
+        <div class="feature-icon">🤖</div>
+        <div class="feature-content">
+          <h3>AI 자동 변환</h3>
+          <p>OpenAI 기반으로 감정적 표현을 자연스러운 비즈니스 톤으로 변환</p>
+        </div>
+      </div>
+      
+      <div class="feature-item">
+        <div class="feature-icon">🌐</div>
+        <div class="feature-content">
+          <h3>도메인별 설정</h3>
+          <p>사이트별로 기능 활성화/비활성화 및 일시중지 가능</p>
+        </div>
+      </div>
+      
+      <div class="feature-item">
+        <div class="feature-icon">⚙️</div>
+        <div class="feature-content">
+          <h3>모드 선택</h3>
+          <p>경고 모드(권장) 또는 자동변환 모드 중 선택 가능</p>
+        </div>
+      </div>
+      
+      <div class="feature-item">
+        <div class="feature-icon">🔍</div>
+        <div class="feature-content">
+          <h3>592+ 욕설 DB</h3>
+          <p>한국어 욕설 및 공격적 표현을 카테고리별로 정밀 분류하여 감지</p>
+        </div>
+      </div>
+    </div>
+    
+    <div class="features-shortcuts">
+      <h3>🎯 바로가기 키</h3>
+      <div class="shortcut-grid">
+        <div class="shortcut-item">
+          <kbd>Ctrl/Cmd + Shift + Y</kbd>
+          <span>선택된 텍스트 즉시 변환</span>
+        </div>
+        <div class="shortcut-item">
+          <kbd>Enter</kbd>
+          <span>메시지 전송 시 자동 검증</span>
+        </div>
+      </div>
+    </div>
+  </div>
   
   <!-- API Key 안내 배너 -->
   <div class="card banner" id="apiKeyBanner">

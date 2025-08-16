@@ -58,14 +58,23 @@
     BIZTONE_GUARD_DECIDE: "BIZTONE_GUARD_DECIDE",
     BIZTONE_GET_GUARD_MODE: "BIZTONE_GET_GUARD_MODE",
     BIZTONE_GUARD_WARNING: "BIZTONE_GUARD_WARNING",
+    BIZTONE_GET_PROFANITY_DATA: "BIZTONE_GET_PROFANITY_DATA",
     OPEN_OPTIONS: "OPEN_OPTIONS"
   };
 
-  // Risk assessment vocabulary
-  const RISK_VOCABULARY = {
-    PROFANITY: ["씨발","시발","좆","병신","개새끼","꺼져","좆같","ㅅㅂ","ㅂㅅ","개같","미친","염병","시팔","씨팔"],
+  // Risk assessment vocabulary (will be loaded from background)
+  let RISK_VOCABULARY = {
+    PROFANITY: [],
     AGGRESSIVE: ["당장","빨리","왜이러","대체","책임져","뭐하","최악","말이 됩니까","어이가","화나","짜증","열받","죽을","해명","지금 당장"],
     RUDE: ["너네","니들","야","정신차려","하라는"]
+  };
+
+  // Profanity categories loaded from background
+  let PROFANITY_CATEGORIES = {
+    strong: [],
+    weak: [],
+    adult: [],
+    slur: []
   };
 
   // ==================== GLOBAL STATE ====================
@@ -86,6 +95,13 @@
   let __BIZTONE_LAST_MESSAGE_TS = 0;
   let __BIZTONE_LAST_MESSAGE_TYPE = null;
 
+  // Real-time detection state
+  let __BIZTONE_REALTIME_BADGES = new Map(); // Track active warning badges
+  let __BIZTONE_REALTIME_DEBOUNCE = null;
+  let __BIZTONE_MONITORED_INPUTS = new Set(); // Track inputs we're monitoring
+  let __BIZTONE_LAST_DETECTION_TIME = 0; // For adaptive timing
+  let __BIZTONE_BADGE_TIMERS = new Map(); // Track badge removal timers
+
   // Initialize cache and regex
   const guardCache = new Map();
   const profanityRegex = new RegExp(
@@ -95,6 +111,50 @@
 
   // Local whitelist for fallback (sync with background)
   const LOCAL_WHITELIST = ["시발점", "始發", "시발역", "출발점", "미친 듯이", "미친 척", "개발자", "개같이", "열받아"];
+
+  // ==================== DATA LOADING ====================
+
+  /**
+   * Loads profanity categories data from background script
+   */
+  function loadProfanityData() {
+    return new Promise((resolve) => {
+      safeSendMessage({
+        type: MESSAGE_TYPES.BIZTONE_GET_PROFANITY_DATA
+      }, (response) => {
+        if (response && response.ok && response.result) {
+          const data = response.result;
+          
+          // Update profanity categories
+          PROFANITY_CATEGORIES.strong = data.strong || [];
+          PROFANITY_CATEGORIES.weak = data.weak || [];
+          PROFANITY_CATEGORIES.adult = data.adult || [];
+          PROFANITY_CATEGORIES.slur = data.slur || [];
+          
+          // Update RISK_VOCABULARY.PROFANITY with all categories
+          RISK_VOCABULARY.PROFANITY = [
+            ...PROFANITY_CATEGORIES.strong,
+            ...PROFANITY_CATEGORIES.weak,
+            ...PROFANITY_CATEGORIES.adult,
+            ...PROFANITY_CATEGORIES.slur
+          ];
+          
+          console.debug("[BizTone] Profanity data loaded:", {
+            strong: PROFANITY_CATEGORIES.strong.length,
+            weak: PROFANITY_CATEGORIES.weak.length,
+            adult: PROFANITY_CATEGORIES.adult.length,
+            slur: PROFANITY_CATEGORIES.slur.length,
+            total: RISK_VOCABULARY.PROFANITY.length
+          });
+          
+          resolve(true);
+        } else {
+          console.warn("[BizTone] Failed to load profanity data from background");
+          resolve(false);
+        }
+      });
+    });
+  }
 
   // ==================== UTILITY FUNCTIONS ====================
 
@@ -344,39 +404,80 @@
   /**
    * Check if guard should be disabled for current domain
    */
+  // Domain status cache to avoid repeated calls
+  let domainStatusCache = new Map();
+  let domainStatusCacheTime = 0;
+  const DOMAIN_CACHE_TTL = 30000; // 30 seconds
+
   async function shouldDisableGuardForDomain() {
     const domain = getCurrentDomain();
     if (!domain) return false;
     
+    // Check cache first
+    const now = Date.now();
+    if (domainStatusCacheTime + DOMAIN_CACHE_TTL > now && domainStatusCache.has(domain)) {
+      return domainStatusCache.get(domain);
+    }
+    
+    // Check if extension context is valid before making API call
+    if (!isExtensionContextValid()) {
+      console.debug('[BizTone] Extension context invalid, defaulting to enabled');
+      return false;
+    }
+    
     try {
-      const response = await chrome.runtime.sendMessage({
-        type: 'BIZTONE_GET_DOMAIN_STATUS',
-        domain: domain
+      const response = await new Promise((resolve, reject) => {
+        if (!chrome.runtime?.sendMessage) {
+          reject(new Error('Runtime not available'));
+          return;
+        }
+        
+        chrome.runtime.sendMessage({
+          type: 'BIZTONE_GET_DOMAIN_STATUS',
+          domain: domain
+        }, (response) => {
+          if (chrome.runtime.lastError) {
+            reject(new Error(chrome.runtime.lastError.message));
+          } else {
+            resolve(response);
+          }
+        });
       });
       
       if (response && response.ok && response.result) {
         const status = response.result;
+        let isDisabled = false;
         
         // Check if domain is disabled
         if (!status.enabled) {
           console.log(`[BizTone] 🔇 Domain ${domain} is disabled`);
-          return true;
+          isDisabled = true;
         }
         
         // Check if domain is paused
         if (status.paused) {
           console.log(`[BizTone] ⏸️ Domain ${domain} is paused (${status.pauseRemaining} min remaining)`);
-          return true;
+          isDisabled = true;
         }
         
-        console.debug(`[BizTone] ✅ Domain ${domain} is enabled`);
-        return false;
+        if (!isDisabled) {
+          console.debug(`[BizTone] ✅ Domain ${domain} is enabled`);
+        }
+        
+        // Cache the result
+        domainStatusCache.set(domain, isDisabled);
+        domainStatusCacheTime = now;
+        
+        return isDisabled;
       } else {
         console.warn('[BizTone] Failed to get domain status, defaulting to enabled');
         return false; // Default to enabled on error
       }
     } catch (error) {
       console.warn('[BizTone] Error checking domain rules:', error);
+      // Cache the failure as "enabled" for a short time
+      domainStatusCache.set(domain, false);
+      domainStatusCacheTime = now;
       return false; // Default to enabled on error
     }
   }
@@ -408,11 +509,36 @@
     let score = 0;
     const riskFactors = {};
 
-    // 1) Profanity/offensive language - Strong weight
-    if (profanityRegex.test(text)) {
-      score += 4; // Stronger penalty for profanity
+    // 1) Profanity/offensive language - Optimized category-based weights
+    let profanityScore = 0;
+    let profanityMatches = [];
+    
+    // Performance optimization: Check categories in order of severity and stop early if high score
+    const categoryChecks = [
+      { words: PROFANITY_CATEGORIES.strong, weight: 5, category: 'strong' },
+      { words: PROFANITY_CATEGORIES.adult, weight: 4, category: 'adult' },
+      { words: PROFANITY_CATEGORIES.slur, weight: 4, category: 'slur' },
+      { words: PROFANITY_CATEGORIES.weak, weight: 2, category: 'weak' }
+    ];
+    
+    for (const check of categoryChecks) {
+      for (const word of check.words) {
+        if (text.includes(word)) {
+          profanityScore += check.weight;
+          profanityMatches.push({ word, category: check.category });
+          
+          // Early exit for performance if we already have high risk
+          if (profanityScore >= 6) break;
+        }
+      }
+      if (profanityScore >= 6) break; // Exit category loop early
+    }
+    
+    if (profanityScore > 0) {
+      score += Math.min(6, profanityScore); // Cap at 6 points
       riskFactors.profanity = true;
-      console.debug("[BizTone] Profanity detected:", text, "Score:", score);
+      riskFactors.profanityMatches = profanityMatches;
+      console.debug("[BizTone] Profanity detected:", profanityMatches, "Score:", profanityScore);
     }
 
     // 2) Aggressive/rude vocabulary
@@ -1162,6 +1288,410 @@
     });
   }
 
+  // ==================== REAL-TIME DETECTION SYSTEM ====================
+
+  /**
+   * Creates and shows a real-time warning badge for an input element
+   * @param {HTMLElement} element - The input element to attach badge to
+   * @param {number} riskScore - Risk score (1-5)
+   * @param {Object} riskFactors - Risk factors detected
+   */
+  function showRealtimeBadge(element, riskScore, riskFactors) {
+    // Cancel any pending removal timer
+    const existingTimer = __BIZTONE_BADGE_TIMERS.get(element);
+    if (existingTimer) {
+      clearTimeout(existingTimer);
+      __BIZTONE_BADGE_TIMERS.delete(element);
+    }
+    
+    // Remove existing badge for this element (immediate)
+    removeRealtimeBadge(element, true);
+    
+    // Determine badge style and text based on risk level
+    let badgeClass = "biztone-realtime-badge";
+    let icon = "⚠️";
+    let text = "주의";
+    
+    if (riskScore >= 4) {
+      badgeClass += " high-risk";
+      icon = "🚫";
+      text = "위험";
+    } else if (riskScore >= 2) {
+      badgeClass += " medium-risk";
+      icon = "⚠️";
+      text = "주의";
+    } else {
+      badgeClass += " low-risk";
+      icon = "💭";
+      text = "확인";
+    }
+    
+    // Create badge element
+    const badge = document.createElement("div");
+    badge.className = badgeClass;
+    badge.innerHTML = `
+      <span class="biztone-badge-icon">${icon}</span>
+      <span class="biztone-badge-text">${text}</span>
+    `;
+    
+    // Smart positioning system with priority-based placement
+    const rect = element.getBoundingClientRect();
+    const scrollLeft = window.scrollX || document.documentElement.scrollLeft;
+    const scrollTop = window.scrollY || document.documentElement.scrollTop;
+    const badgeWidth = 120;
+    const badgeHeight = 32;
+    const offset = 8;
+    
+    // Position options in priority order
+    const positions = [
+      // 1. Top-right corner (preferred for most inputs)
+      {
+        top: rect.top + scrollTop - badgeHeight - offset,
+        left: rect.right + scrollLeft - badgeWidth + offset,
+        name: "top-right"
+      },
+      // 2. Top-left corner
+      {
+        top: rect.top + scrollTop - badgeHeight - offset,
+        left: rect.left + scrollLeft - offset,
+        name: "top-left"
+      },
+      // 3. Bottom-right corner
+      {
+        top: rect.bottom + scrollTop + offset,
+        left: rect.right + scrollLeft - badgeWidth + offset,
+        name: "bottom-right"
+      },
+      // 4. Bottom-left corner
+      {
+        top: rect.bottom + scrollTop + offset,
+        left: rect.left + scrollLeft - offset,
+        name: "bottom-left"
+      },
+      // 5. Right side middle
+      {
+        top: rect.top + scrollTop + (rect.height - badgeHeight) / 2,
+        left: rect.right + scrollLeft + offset,
+        name: "right-middle"
+      },
+      // 6. Left side middle
+      {
+        top: rect.top + scrollTop + (rect.height - badgeHeight) / 2,
+        left: rect.left + scrollLeft - badgeWidth - offset,
+        name: "left-middle"
+      }
+    ];
+    
+    // Advanced positioning logic with collision detection
+    let bestPosition = positions[0]; // Default to top-right
+    
+    // Check for existing badges to avoid overlap
+    const existingBadges = document.querySelectorAll('.biztone-realtime-badge');
+    
+    for (const pos of positions) {
+      const fitsHorizontally = pos.left >= scrollLeft && 
+                              pos.left + badgeWidth <= scrollLeft + window.innerWidth;
+      const fitsVertically = pos.top >= scrollTop && 
+                            pos.top + badgeHeight <= scrollTop + window.innerHeight;
+      
+      // Check for collisions with existing badges
+      let hasCollision = false;
+      for (const existingBadge of existingBadges) {
+        const existingRect = existingBadge.getBoundingClientRect();
+        const existingLeft = existingRect.left + scrollLeft;
+        const existingTop = existingRect.top + scrollTop;
+        
+        // Simple collision detection
+        if (!(pos.left + badgeWidth < existingLeft || 
+              pos.left > existingLeft + existingRect.width ||
+              pos.top + badgeHeight < existingTop ||
+              pos.top > existingTop + existingRect.height)) {
+          hasCollision = true;
+          break;
+        }
+      }
+      
+      if (fitsHorizontally && fitsVertically && !hasCollision) {
+        bestPosition = pos;
+        break;
+      }
+    }
+    
+    // Fallback: If all positions have collisions, use a stacked approach
+    if (bestPosition === positions[0] && existingBadges.length > 0) {
+      // Stack badges vertically with offset
+      const stackOffset = existingBadges.length * (badgeHeight + 4);
+      bestPosition.top += stackOffset;
+      bestPosition.name += `-stacked-${existingBadges.length}`;
+    }
+    
+    // Apply position with smooth transition
+    badge.style.top = `${bestPosition.top}px`;
+    badge.style.left = `${bestPosition.left}px`;
+    badge.classList.add(`biztone-position-${bestPosition.name}`);
+    
+    console.debug("[BizTone] Badge positioned at:", bestPosition.name, { top: bestPosition.top, left: bestPosition.left });
+    
+    // Add to DOM and track
+    document.documentElement.appendChild(badge);
+    __BIZTONE_REALTIME_BADGES.set(element, badge);
+    
+    // Auto-remove after 10 seconds (increased for better UX)
+    setTimeout(() => {
+      removeRealtimeBadge(element, true);
+    }, 10000);
+    
+    console.debug("[BizTone] Real-time badge shown:", { riskScore, riskFactors, text });
+  }
+
+  /**
+   * Removes real-time warning badge for an element
+   * @param {HTMLElement} element - The input element
+   * @param {boolean} immediate - Whether to remove immediately or with delay
+   */
+  function removeRealtimeBadge(element, immediate = false) {
+    // Clear any existing timer
+    const existingTimer = __BIZTONE_BADGE_TIMERS.get(element);
+    if (existingTimer) {
+      clearTimeout(existingTimer);
+      __BIZTONE_BADGE_TIMERS.delete(element);
+    }
+    
+    if (immediate) {
+      const badge = __BIZTONE_REALTIME_BADGES.get(element);
+      if (badge && badge.parentNode) {
+        badge.parentNode.removeChild(badge);
+      }
+      __BIZTONE_REALTIME_BADGES.delete(element);
+    } else {
+      // Delayed removal to prevent flickering during fast typing
+      const timer = setTimeout(() => {
+        const badge = __BIZTONE_REALTIME_BADGES.get(element);
+        if (badge && badge.parentNode) {
+          badge.parentNode.removeChild(badge);
+        }
+        __BIZTONE_REALTIME_BADGES.delete(element);
+        __BIZTONE_BADGE_TIMERS.delete(element);
+      }, 1000); // 1 second delay to prevent flickering
+      
+      __BIZTONE_BADGE_TIMERS.set(element, timer);
+    }
+  }
+
+  /**
+   * Handles real-time text analysis for an input element
+   * @param {HTMLElement} element - The input element
+   * @param {string} text - Current text content
+   */
+  async function handleRealtimeDetection(element, text) {
+    const normalizedText = normalizeText(text);
+    
+    // Skip if text is empty or too short - use delayed removal to prevent flickering
+    if (!normalizedText || normalizedText.length < 2) {
+      removeRealtimeBadge(element, false); // Delayed removal
+      return;
+    }
+    
+    // Performance optimization: Skip very long texts in real-time
+    if (normalizedText.length > 500) {
+      console.debug("[BizTone] Skipping real-time check for long text (performance)");
+      return;
+    }
+    
+    // Check if guard is disabled for current domain (cached to avoid repeated calls)
+    if (await shouldDisableGuardForDomain()) {
+      removeRealtimeBadge(element, true); // Immediate removal for disabled domains
+      return;
+    }
+    
+    // Quick local assessment (no API calls for real-time)
+    const quickRisk = calculateBasicRiskScore(normalizedText);
+    
+    console.debug("[BizTone] Real-time check:", { 
+      text: normalizedText.substring(0, 20) + "...", 
+      score: quickRisk.score, 
+      whitelisted: quickRisk.whitelisted,
+      length: normalizedText.length
+    });
+    
+    // Show badge only if there's some risk
+    // Use lower threshold for real-time to give early warning
+    if (quickRisk.score > 0.5 && !quickRisk.whitelisted) {
+      showRealtimeBadge(element, quickRisk.score, quickRisk.riskFactors);
+    } else {
+      // Use delayed removal to prevent flickering during fast typing
+      removeRealtimeBadge(element, false);
+    }
+  }
+
+  /**
+   * Smart debounced real-time detection with adaptive timing
+   * @param {HTMLElement} element - Input element
+   * @param {string} text - Current text
+   */
+  function debouncedRealtimeDetection(element, text) {
+    const now = Date.now();
+    
+    // Clear previous debounce
+    if (__BIZTONE_REALTIME_DEBOUNCE) {
+      clearTimeout(__BIZTONE_REALTIME_DEBOUNCE);
+    }
+    
+    // Adaptive debounce timing based on various factors
+    let debounceMs = getAdaptiveDebounceTime(text, now);
+    
+    // Immediate detection for high-confidence profanity
+    if (hasHighConfidenceProfanity(text)) {
+      debounceMs = 50; // Almost instant for clear profanity
+    }
+    
+    console.debug(`[BizTone] Scheduled detection in ${debounceMs}ms for text length: ${text.length}`);
+    
+    // Set new debounce timer
+    __BIZTONE_REALTIME_DEBOUNCE = setTimeout(() => {
+      const startTime = performance.now();
+      handleRealtimeDetection(element, text);
+      const endTime = performance.now();
+      
+      console.debug(`[BizTone] Detection completed in ${(endTime - startTime).toFixed(2)}ms`);
+      
+      __BIZTONE_REALTIME_DEBOUNCE = null;
+      __BIZTONE_LAST_DETECTION_TIME = Date.now();
+    }, debounceMs);
+  }
+
+  /**
+   * Calculates adaptive debounce time based on context
+   * @param {string} text - Current text
+   * @param {number} now - Current timestamp
+   * @returns {number} Debounce time in milliseconds
+   */
+  function getAdaptiveDebounceTime(text, now) {
+    const textLength = text.length;
+    const timeSinceLastDetection = now - __BIZTONE_LAST_DETECTION_TIME;
+    
+    // Base timing: shorter for shorter text
+    let baseTime = Math.min(400, Math.max(150, textLength * 20));
+    
+    // Speed up if user is typing continuously
+    if (timeSinceLastDetection < 2000) {
+      baseTime *= 0.7; // 30% faster for continuous typing
+    }
+    
+    // Speed up for obvious risk patterns
+    if (containsObviousRiskPattern(text)) {
+      baseTime *= 0.5; // 50% faster for risky patterns
+    }
+    
+    // Slow down for very long text to prevent performance issues
+    if (textLength > 200) {
+      baseTime *= 1.5;
+    }
+    
+    return Math.max(50, Math.min(600, baseTime)); // Clamp between 50ms and 600ms
+  }
+
+  /**
+   * Quick check for high-confidence profanity
+   * @param {string} text - Text to check
+   * @returns {boolean} True if contains obvious profanity
+   */
+  function hasHighConfidenceProfanity(text) {
+    // Check for most common strong profanity that should trigger immediately
+    const highConfidenceWords = ["씨발", "시발", "좆", "개새끼", "병신"];
+    return highConfidenceWords.some(word => text.includes(word));
+  }
+
+  /**
+   * Quick pattern check for obvious risks
+   * @param {string} text - Text to check
+   * @returns {boolean} True if contains obvious risk patterns
+   */
+  function containsObviousRiskPattern(text) {
+    // Quick regex for common patterns
+    return /[ㅅㅆ][ㅂㅄ]|[ㅂㅄ][ㅅㅆ]|개새|병신|좆|꺼져/.test(text) ||
+           text.includes("!!!!") || 
+           text.includes("????") ||
+           /[A-Z]{4,}/.test(text);
+  }
+
+  /**
+   * Sets up real-time monitoring for an input element
+   * @param {HTMLElement} element - Input element to monitor
+   */
+  function setupRealtimeMonitoring(element) {
+    // Skip if already monitoring
+    if (__BIZTONE_MONITORED_INPUTS.has(element)) {
+      return;
+    }
+    
+    console.debug("[BizTone] Setting up real-time monitoring for element:", element.tagName);
+    
+    // Add to monitored set
+    __BIZTONE_MONITORED_INPUTS.add(element);
+    
+    // Enhanced input event listener with instant detection
+    const inputHandler = () => {
+      const text = element.value || element.textContent || element.innerText || "";
+      
+      // Instant detection for obvious profanity (no debounce)
+      if (hasHighConfidenceProfanity(text)) {
+        console.debug("[BizTone] Instant detection triggered for:", text.substring(0, 10) + "...");
+        handleRealtimeDetection(element, text);
+        return;
+      }
+      
+      // Regular debounced detection for other cases
+      debouncedRealtimeDetection(element, text);
+    };
+    
+    element.addEventListener('input', inputHandler);
+    element.addEventListener('paste', inputHandler);
+    
+    // Cleanup when element loses focus (after a delay)
+    const blurHandler = () => {
+      setTimeout(() => {
+        removeRealtimeBadge(element, false); // Use delayed removal
+      }, 3000); // Keep badge for 3 seconds after blur
+    };
+    
+    element.addEventListener('blur', blurHandler);
+    
+    // Store cleanup function on element
+    element.__BIZTONE_CLEANUP__ = () => {
+      element.removeEventListener('input', inputHandler);
+      element.removeEventListener('paste', inputHandler);
+      element.removeEventListener('blur', blurHandler);
+      removeRealtimeBadge(element);
+      __BIZTONE_MONITORED_INPUTS.delete(element);
+      delete element.__BIZTONE_CLEANUP__;
+    };
+  }
+
+  /**
+   * Automatically detects and sets up monitoring for text input elements
+   */
+  function autoSetupRealtimeMonitoring() {
+    // Find text input elements
+    const textInputs = document.querySelectorAll(`
+      textarea,
+      input[type="text"],
+      input[type="search"],
+      [contenteditable="true"],
+      [role="textbox"]
+    `);
+    
+    textInputs.forEach(element => {
+      // Skip if element is not visible or too small
+      const rect = element.getBoundingClientRect();
+      if (rect.width < 50 || rect.height < 20) return;
+      
+      setupRealtimeMonitoring(element);
+    });
+    
+    console.debug("[BizTone] Auto-setup real-time monitoring for", textInputs.length, "elements");
+  }
+
   // ==================== GUARD SYSTEM ====================
 
   /**
@@ -1590,6 +2120,103 @@
     });
   }
 
-  const initFrameInfo = window.self === window.top ? 'TOP-FRAME' : `IFRAME(${window.location.href})`;
-  console.debug(`[BizTone ContentScript] Initialized with hybrid guard system in ${initFrameInfo}`);
+  // ==================== INITIALIZATION ====================
+
+  /**
+   * Initialize the BizTone content script with hybrid detection system
+   */
+  async function initializeBizTone() {
+    const initFrameInfo = window.self === window.top ? 'TOP-FRAME' : `IFRAME(${window.location.href})`;
+    console.debug(`[BizTone ContentScript] Initializing hybrid guard system in ${initFrameInfo}`);
+    
+    // Load profanity data first
+    await loadProfanityData();
+    
+    // Setup initial real-time monitoring
+    autoSetupRealtimeMonitoring();
+    
+    // Monitor for new input elements added dynamically
+    const observer = new MutationObserver((mutations) => {
+      let hasNewInputs = false;
+      
+      mutations.forEach((mutation) => {
+        mutation.addedNodes.forEach((node) => {
+          if (node.nodeType === Node.ELEMENT_NODE) {
+            // Check if the node itself is a text input
+            if (isTextInputElement(node)) {
+              setupRealtimeMonitoring(node);
+              hasNewInputs = true;
+            }
+            
+            // Check for text inputs within the added node
+            const textInputs = node.querySelectorAll && node.querySelectorAll(`
+              textarea,
+              input[type="text"],
+              input[type="search"],
+              [contenteditable="true"],
+              [role="textbox"]
+            `);
+            
+            if (textInputs && textInputs.length > 0) {
+              textInputs.forEach(element => {
+                const rect = element.getBoundingClientRect();
+                if (rect.width >= 50 && rect.height >= 20) {
+                  setupRealtimeMonitoring(element);
+                  hasNewInputs = true;
+                }
+              });
+            }
+          }
+        });
+      });
+      
+      if (hasNewInputs) {
+        console.debug("[BizTone] New text inputs detected and monitored");
+      }
+    });
+    
+    // Start observing
+    observer.observe(document.body, {
+      childList: true,
+      subtree: true
+    });
+    
+    // Re-setup monitoring on navigation/page changes
+    let lastUrl = location.href;
+    new MutationObserver(() => {
+      if (location.href !== lastUrl) {
+        lastUrl = location.href;
+        console.debug("[BizTone] URL changed, re-initializing real-time monitoring");
+        setTimeout(autoSetupRealtimeMonitoring, 1000);
+      }
+    }).observe(document, { subtree: true, childList: true });
+    
+    console.debug(`[BizTone ContentScript] Hybrid detection system initialized in ${initFrameInfo}`);
+  }
+
+  /**
+   * Checks if an element is a text input element
+   * @param {HTMLElement} element - Element to check
+   * @returns {boolean} True if it's a text input element
+   */
+  function isTextInputElement(element) {
+    if (!element || !element.tagName) return false;
+    
+    const tagName = element.tagName.toLowerCase();
+    if (tagName === 'textarea') return true;
+    if (tagName === 'input' && ['text', 'search'].includes(element.type)) return true;
+    if (element.contentEditable === 'true') return true;
+    if (element.getAttribute('role') === 'textbox') return true;
+    
+    return false;
+  }
+
+  // Initialize when DOM is ready
+  if (document.readyState === 'loading') {
+    document.addEventListener('DOMContentLoaded', initializeBizTone);
+  } else {
+    // DOM already loaded
+    setTimeout(initializeBizTone, 100);
+  }
+
 })();

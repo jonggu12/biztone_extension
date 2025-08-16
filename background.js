@@ -27,6 +27,7 @@ const MESSAGE_TYPES = {
   // Guard mode settings
   BIZTONE_GET_GUARD_MODE: "BIZTONE_GET_GUARD_MODE",
   BIZTONE_GUARD_WARNING: "BIZTONE_GUARD_WARNING",
+  BIZTONE_GET_PROFANITY_DATA: "BIZTONE_GET_PROFANITY_DATA",
   // Domain management
   BIZTONE_GET_DOMAIN_STATUS: "BIZTONE_GET_DOMAIN_STATUS",
   BIZTONE_TOGGLE_DOMAIN: "BIZTONE_TOGGLE_DOMAIN",
@@ -50,6 +51,58 @@ let patternCompilationPromise = null;
 let guardModeSettings = {
   GUARD_MODE: "warn" // Default: warn mode (recommended)
 };
+
+// Profanity categories cache
+let profanityCategoriesCache = null;
+
+// ==================== DATA LOADING ====================
+
+/**
+ * Loads and parses profanity categories from JSON file
+ */
+async function loadProfanityCategories() {
+  if (profanityCategoriesCache) {
+    return profanityCategoriesCache;
+  }
+
+  try {
+    const response = await fetch(chrome.runtime.getURL('data/fword_categories.json'));
+    const data = await response.json();
+    
+    // Organize by category
+    const categories = {
+      strong: [],
+      weak: [],
+      adult: [],
+      slur: []
+    };
+    
+    data.forEach(item => {
+      if (item.word && item.category && categories[item.category]) {
+        categories[item.category].push(item.word);
+      }
+    });
+    
+    profanityCategoriesCache = categories;
+    debugLog("Data", "Profanity categories loaded:", {
+      strong: categories.strong.length,
+      weak: categories.weak.length,
+      adult: categories.adult.length,
+      slur: categories.slur.length,
+      total: data.length
+    });
+    
+    return categories;
+  } catch (error) {
+    debugLog("Error", "Failed to load profanity categories:", error);
+    return {
+      strong: [],
+      weak: [],
+      adult: [],
+      slur: []
+    };
+  }
+}
 
 // ==================== UTILITY FUNCTIONS ====================
 
@@ -1150,6 +1203,11 @@ chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
 
       case MESSAGE_TYPES.BIZTONE_GET_GUARD_MODE:
         sendResponse(createSuccessResponse({ guardMode: getGuardMode() }));
+        break;
+
+      case MESSAGE_TYPES.BIZTONE_GET_PROFANITY_DATA:
+        const profanityData = await loadProfanityCategories();
+        sendResponse(createSuccessResponse(profanityData));
         break;
 
       case MESSAGE_TYPES.OPEN_OPTIONS:

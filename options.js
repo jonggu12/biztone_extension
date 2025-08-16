@@ -1,10 +1,40 @@
 function load() {
   chrome.storage.sync.get(["OPENAI_API_KEY", "OPENAI_MODEL", "GUARD_MODE"], (res) => {
-    if (res.OPENAI_API_KEY) document.getElementById("apiKey").value = res.OPENAI_API_KEY;
+    if (res.OPENAI_API_KEY) {
+      document.getElementById("apiKey").value = res.OPENAI_API_KEY;
+      // API 키가 있으면 배너 숨기기
+      hideApiKeyBanner();
+    } else {
+      // API 키가 없으면 배너 표시
+      showApiKeyBanner();
+    }
+    
     if (res.OPENAI_MODEL) document.getElementById("model").value = res.OPENAI_MODEL;
     if (res.GUARD_MODE) document.getElementById("guardMode").value = res.GUARD_MODE;
     else document.getElementById("guardMode").value = "warn"; // 기본값: 경고 모드 (권장)
   });
+}
+
+/**
+ * API 키 배너를 숨기는 함수 (부드러운 애니메이션)
+ */
+function hideApiKeyBanner() {
+  const banner = document.getElementById("apiKeyBanner");
+  if (banner && !banner.classList.contains("hidden")) {
+    banner.classList.add("hidden");
+    console.debug("[BizTone Settings] API key banner hidden");
+  }
+}
+
+/**
+ * API 키 배너를 표시하는 함수 (부드러운 애니메이션)
+ */
+function showApiKeyBanner() {
+  const banner = document.getElementById("apiKeyBanner");
+  if (banner && banner.classList.contains("hidden")) {
+    banner.classList.remove("hidden");
+    console.debug("[BizTone Settings] API key banner shown");
+  }
 }
 
 function save() {
@@ -19,11 +49,30 @@ function save() {
     GUARD_MODE: guardMode
   }, () => {
     alert("저장되었습니다.");
+    
+    // API 키 상태에 따라 배너 표시/숨김
+    if (apiKey && apiKey.startsWith("sk-")) {
+      hideApiKeyBanner();
+    } else {
+      showApiKeyBanner();
+    }
   });
 }
 
 document.getElementById("save").addEventListener("click", save);
 document.addEventListener("DOMContentLoaded", load);
+
+// API 키 입력 필드 변경 감지
+document.getElementById("apiKey").addEventListener("input", (e) => {
+  const apiKey = e.target.value.trim();
+  
+  // 실시간으로 배너 상태 업데이트
+  if (apiKey && apiKey.startsWith("sk-") && apiKey.length > 20) {
+    hideApiKeyBanner();
+  } else {
+    showApiKeyBanner();
+  }
+});
 
 function setStatus(msg, ok=true) {
   const el = document.getElementById("status");

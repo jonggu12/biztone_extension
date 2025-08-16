@@ -249,3 +249,173 @@
   font-size: 11px;
   opacity: 0.65;
 }
+
+/* Real-time warning badge styles */
+.biztone-realtime-badge {
+  position: absolute;
+  z-index: 2147483646;
+  background: linear-gradient(135deg, #ef4444, #dc2626);
+  color: white;
+  border-radius: 12px;
+  padding: 4px 8px;
+  font-size: 10px;
+  font-weight: 600;
+  box-shadow: 0 2px 8px rgba(239, 68, 68, 0.3);
+  border: 1px solid rgba(255, 255, 255, 0.2);
+  font-family: ui-sans-serif, system-ui, -apple-system, Segoe UI, Roboto, "Apple SD Gothic Neo", "Noto Sans KR", Arial;
+  user-select: none;
+  pointer-events: none;
+  animation: biztone-badge-pulse 2s ease-in-out infinite;
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  max-width: 120px;
+  text-align: center;
+  letter-spacing: 0.2px;
+}
+
+.biztone-realtime-badge.medium-risk {
+  background: linear-gradient(135deg, #f59e0b, #d97706);
+  box-shadow: 0 2px 8px rgba(245, 158, 11, 0.3);
+}
+
+.biztone-realtime-badge.low-risk {
+  background: linear-gradient(135deg, #8b5cf6, #7c3aed);
+  box-shadow: 0 2px 8px rgba(139, 92, 246, 0.3);
+}
+
+.biztone-badge-icon {
+  font-size: 8px;
+  opacity: 0.9;
+}
+
+.biztone-badge-text {
+  font-size: 9px;
+  line-height: 1;
+}
+
+@keyframes biztone-badge-pulse {
+  0%, 100% { 
+    opacity: 0.9; 
+    transform: scale(1);
+  }
+  50% { 
+    opacity: 1; 
+    transform: scale(1.05);
+  }
+}
+
+/* Position-specific badge styling */
+.biztone-position-top-right {
+  transform-origin: bottom left;
+}
+
+.biztone-position-top-left {
+  transform-origin: bottom right;
+}
+
+.biztone-position-bottom-right {
+  transform-origin: top left;
+}
+
+.biztone-position-bottom-left {
+  transform-origin: top right;
+}
+
+.biztone-position-right-middle {
+  transform-origin: center left;
+}
+
+.biztone-position-left-middle {
+  transform-origin: center right;
+}
+
+/* Enhanced badge appearance with better visibility */
+.biztone-realtime-badge {
+  position: absolute;
+  z-index: 2147483646;
+  background: linear-gradient(135deg, #ef4444, #dc2626);
+  color: white;
+  border-radius: 16px;
+  padding: 6px 12px;
+  font-size: 11px;
+  font-weight: 600;
+  box-shadow: 
+    0 4px 12px rgba(239, 68, 68, 0.4),
+    0 0 0 2px rgba(255, 255, 255, 0.8),
+    inset 0 1px 0 rgba(255, 255, 255, 0.2);
+  border: 1px solid rgba(255, 255, 255, 0.3);
+  font-family: ui-sans-serif, system-ui, -apple-system, Segoe UI, Roboto, "Apple SD Gothic Neo", "Noto Sans KR", Arial;
+  user-select: none;
+  pointer-events: none;
+  animation: biztone-badge-appear 0.3s cubic-bezier(0.34, 1.56, 0.64, 1);
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  max-width: 120px;
+  min-width: 80px;
+  text-align: center;
+  letter-spacing: 0.3px;
+  backdrop-filter: blur(4px);
+}
+
+.biztone-realtime-badge.medium-risk {
+  background: linear-gradient(135deg, #f59e0b, #d97706);
+  box-shadow: 
+    0 4px 12px rgba(245, 158, 11, 0.4),
+    0 0 0 2px rgba(255, 255, 255, 0.8),
+    inset 0 1px 0 rgba(255, 255, 255, 0.2);
+}
+
+.biztone-realtime-badge.low-risk {
+  background: linear-gradient(135deg, #8b5cf6, #7c3aed);
+  box-shadow: 
+    0 4px 12px rgba(139, 92, 246, 0.4),
+    0 0 0 2px rgba(255, 255, 255, 0.8),
+    inset 0 1px 0 rgba(255, 255, 255, 0.2);
+}
+
+.biztone-badge-icon {
+  font-size: 10px;
+  opacity: 0.95;
+  line-height: 1;
+}
+
+.biztone-badge-text {
+  font-size: 10px;
+  line-height: 1;
+  font-weight: 700;
+  text-shadow: 0 1px 2px rgba(0, 0, 0, 0.2);
+}
+
+@keyframes biztone-badge-appear {
+  0% { 
+    opacity: 0; 
+    transform: scale(0.5) translateY(10px);
+  }
+  70% { 
+    transform: scale(1.05) translateY(-2px);
+  }
+  100% { 
+    opacity: 1; 
+    transform: scale(1) translateY(0);
+  }
+}
+
+/* Responsive adjustments */
+@media (max-width: 768px) {
+  .biztone-realtime-badge {
+    font-size: 10px;
+    padding: 4px 8px;
+    max-width: 100px;
+    min-width: 70px;
+  }
+  
+  .biztone-badge-icon {
+    font-size: 9px;
+  }
+  
+  .biztone-badge-text {
+    font-size: 9px;
+  }
+}
