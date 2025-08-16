@@ -1,68 +1,343 @@
 /**
  * BizTone Chrome Extension - Background Script
- * Handles OpenAI API integration, context menus, and message routing
+ * Enterprise-grade profanity filtering and business tone conversion
+ * 
+ * @author BizTone Team
+ * @version 2.0
+ * @description Handles OpenAI API integration, Korean profanity detection, and message routing
  */
 
-// ==================== CONSTANTS ====================
+// ==================== CONFIGURATION ====================
 
+/**
+ * Main configuration object
+ * @readonly
+ */
 const CONFIG = {
   MENU_ID: "biztone-convert",
-  DEBUG: true,
   DEBOUNCE_MS: 400,
   DEFAULT_MODEL: "gpt-4o-mini",
-  OPENAI_API_URL: "https://api.openai.com/v1/chat/completions"
+  OPENAI_API_URL: "https://api.openai.com/v1/chat/completions",
+  
+  // Performance settings
+  API_TIMEOUT_MS: 15000,
+  MAX_RETRIES: 3,
+  RATE_LIMIT_DELAY: 500,
+  
+  // Cache settings
+  GUARD_MODE_CACHE_MS: 30000
 };
 
+/**
+ * Message type constants for inter-script communication
+ * @readonly
+ */
 const MESSAGE_TYPES = {
+  // Core functionality
   BIZTONE_PING: "BIZTONE_PING",
   BIZTONE_LOADING: "BIZTONE_LOADING",
   BIZTONE_RESULT: "BIZTONE_RESULT",
   BIZTONE_ERROR: "BIZTONE_ERROR",
   BIZTONE_REPLACE_WITH: "BIZTONE_REPLACE_WITH",
+  
+  // Text processing
   BIZTONE_TEST_CONVERT: "BIZTONE_TEST_CONVERT",
-  BIZTONE_GUARD_DECIDE: "BIZTONE_GUARD_DECIDE",
   BIZTONE_CONVERT_TEXT: "BIZTONE_CONVERT_TEXT",
+  BIZTONE_GUARD_DECIDE: "BIZTONE_GUARD_DECIDE",
   BIZTONE_ADVANCED_RISK: "BIZTONE_ADVANCED_RISK",
-  OPEN_OPTIONS: "OPEN_OPTIONS",
-  // Guard mode settings
+  
+  // Settings and configuration
   BIZTONE_GET_GUARD_MODE: "BIZTONE_GET_GUARD_MODE",
   BIZTONE_GUARD_WARNING: "BIZTONE_GUARD_WARNING",
   BIZTONE_GET_PROFANITY_DATA: "BIZTONE_GET_PROFANITY_DATA",
+  
   // Domain management
   BIZTONE_GET_DOMAIN_STATUS: "BIZTONE_GET_DOMAIN_STATUS",
   BIZTONE_TOGGLE_DOMAIN: "BIZTONE_TOGGLE_DOMAIN",
   BIZTONE_PAUSE_DOMAIN: "BIZTONE_PAUSE_DOMAIN",
   BIZTONE_GET_DOMAIN_RULES: "BIZTONE_GET_DOMAIN_RULES",
   BIZTONE_SET_DOMAIN_RULE: "BIZTONE_SET_DOMAIN_RULE",
-  BIZTONE_REMOVE_DOMAIN_RULE: "BIZTONE_REMOVE_DOMAIN_RULE"
+  BIZTONE_REMOVE_DOMAIN_RULE: "BIZTONE_REMOVE_DOMAIN_RULE",
+  
+  // System
+  OPEN_OPTIONS: "OPEN_OPTIONS"
 };
 
+/**
+ * Localized error messages
+ * @readonly
+ */
 const ERROR_MESSAGES = {
   NO_SELECTION: "선택된 텍스트가 없습니다.",
   NO_API_KEY: "API Key가 설정되지 않았습니다. 설정에서 입력해 주세요.",
-  CONVERSION_FAILED: "변환에 실패했습니다. 다시 시도해 주세요."
+  CONVERSION_FAILED: "변환에 실패했습니다. 다시 시도해 주세요.",
+  RISK_ASSESSMENT_FAILED: "위험도 평가 실패",
+  DECISION_FAILED: "결정 실패",
+  DOMAIN_OPERATION_FAILED: "도메인 작업 실패"
 };
 
-// ==================== GLOBAL STATE ====================
+// ==================== STATE MANAGEMENT ====================
 
-let debounceTimestamp = 0;
-let compiledPatterns = null;
-let patternCompilationPromise = null;
-let guardModeSettings = {
-  GUARD_MODE: "warn" // Default: warn mode (recommended)
-};
+/**
+ * Application state manager
+ */
+class BizToneState {
+  constructor() {
+    this.debounceTimestamp = 0;
+    this.compiledPatterns = null;
+    this.patternCompilationPromise = null;
+    this.profanityCategoriesCache = null;
+    this.guardModeSettings = {
+      GUARD_MODE: "warn" // Default: warn mode (recommended)
+    };
+  }
+  
+  /**
+   * Reset compilation state
+   */
+  resetPatterns() {
+    this.compiledPatterns = null;
+    this.patternCompilationPromise = null;
+    this.profanityCategoriesCache = null;
+  }
+  
+  /**
+   * Check if debounce period has passed
+   * @param {number} threshold - Debounce threshold in ms
+   * @returns {boolean}
+   */
+  shouldDebounce(threshold = CONFIG.DEBOUNCE_MS) {
+    const now = Date.now();
+    const gap = this.debounceTimestamp ? now - this.debounceTimestamp : threshold;
+    
+    if (gap < threshold) {
+      return true;
+    }
+    
+    this.debounceTimestamp = now;
+    return false;
+  }
+}
 
-// Profanity categories cache
-let profanityCategoriesCache = null;
+// Global state instance
+const state = new BizToneState();
+
+// ==================== ERROR HANDLING ====================
+
+/**
+ * Custom error classes for better error handling
+ */
+class BizToneError extends Error {
+  constructor(message, code = 'UNKNOWN') {
+    super(message);
+    this.name = 'BizToneError';
+    this.code = code;
+  }
+}
+
+class APIError extends BizToneError {
+  constructor(message, statusCode = 0) {
+    super(message, 'API_ERROR');
+    this.statusCode = statusCode;
+  }
+}
+
+class ValidationError extends BizToneError {
+  constructor(message) {
+    super(message, 'VALIDATION_ERROR');
+  }
+}
+
+// ==================== API SERVICE ====================
+
+/**
+ * OpenAI API service with enhanced error handling and retry logic
+ */
+class OpenAIService {
+  constructor() {
+    this.baseURL = CONFIG.OPENAI_API_URL;
+    this.timeout = CONFIG.API_TIMEOUT_MS;
+    this.maxRetries = CONFIG.MAX_RETRIES;
+  }
+  
+  /**
+   * Makes authenticated request to OpenAI API
+   * @param {Object} requestBody - Request payload
+   * @param {string} apiKey - API key
+   * @returns {Promise<Object>} API response
+   */
+  async makeRequest(requestBody, apiKey) {
+    if (!apiKey) {
+      throw new ValidationError(ERROR_MESSAGES.NO_API_KEY);
+    }
+    
+    const controller = new AbortController();
+    const timeout = setTimeout(() => controller.abort(), this.timeout);
+    
+    try {
+      for (let attempt = 1; attempt <= this.maxRetries; attempt++) {
+        try {
+          const response = await fetch(this.baseURL, {
+            method: 'POST',
+            headers: {
+              'Content-Type': 'application/json',
+              'Authorization': `Bearer ${apiKey}`
+            },
+            body: JSON.stringify(requestBody),
+            signal: controller.signal
+          });
+          
+          if (response.status !== 429) {
+            if (!response.ok) {
+              const errorText = await response.text();
+              throw new APIError(`OpenAI API error (${response.status}): ${errorText}`, response.status);
+            }
+            return await response.json();
+          }
+          
+          // Handle rate limiting with exponential backoff
+          if (attempt < this.maxRetries) {
+            const delay = CONFIG.RATE_LIMIT_DELAY * attempt * attempt;
+            await new Promise(resolve => setTimeout(resolve, delay));
+          }
+        } catch (error) {
+          if (error.name === 'AbortError') {
+            throw new APIError('OpenAI API request timeout');
+          }
+          if (attempt === this.maxRetries) throw error;
+          
+          // Network error backoff
+          const delay = 1000 * attempt;
+          await new Promise(resolve => setTimeout(resolve, delay));
+        }
+      }
+    } finally {
+      clearTimeout(timeout);
+    }
+  }
+  
+  /**
+   * Convert text to business tone
+   * @param {string} text - Text to convert
+   * @param {string} model - Model to use
+   * @param {string} apiKey - API key
+   * @returns {Promise<string>} Converted text
+   */
+  async convertToBusinessTone(text, model, apiKey) {
+    const requestBody = {
+      model: model || CONFIG.DEFAULT_MODEL,
+      temperature: 0.3,
+      max_tokens: 200,
+      messages: [
+        {
+          role: "system",
+          content: `너는 한국 직장 문화에 익숙한 '비즈니스 커뮤니케이션 전문가'다.
+역할: 입력된 문장을 정중하고 전문적인 비즈니스 톤으로 변환한다.
+
+규칙:
+- 감정적 표현을 중립적이고 객관적으로 변경
+- 명령형을 정중한 요청형으로 변경  
+- 비속어나 부적절한 표현을 적절한 비즈니스 용어로 대체
+- 한국어 존댓말과 비즈니스 매너를 반영
+- 원문의 핵심 의미는 유지하되 톤만 개선
+
+중요: 변환된 문장만 출력하고, "변경하겠습니다", "로 수정합니다" 등의 설명은 절대 포함하지 마세요.`
+        },
+        {
+          role: "user",
+          content: `다음 문장을 비즈니스 톤으로 변환하되, 변환된 문장만 출력하세요:
+
+${text}
+
+변환된 문장:`
+        }
+      ]
+    };
+    
+    try {
+      const data = await this.makeRequest(requestBody, apiKey);
+      const result = data?.choices?.[0]?.message?.content || text;
+      return result.trim();
+    } catch (error) {
+      throw new BizToneError(`텍스트 변환 실패: ${error.message}`);
+    }
+  }
+  
+  /**
+   * Decide whether to send or convert text
+   * @param {string} text - Text to analyze
+   * @param {string} model - Model to use
+   * @param {string} apiKey - API key
+   * @returns {Promise<Object>} Decision result
+   */
+  async decideTextAction(text, model, apiKey) {
+    const requestBody = {
+      model: model || CONFIG.DEFAULT_MODEL,
+      temperature: 0.0,
+      max_tokens: 150,
+      response_format: { type: "json_object" },
+      messages: [
+        {
+          role: "system",
+          content: `너는 한국 직장 문화에 익숙한 '비즈니스 커뮤니케이션 가드'다.
+역할: 입력 문장이 '그대로 보내도 안전한지' 또는 '비즈니스 톤으로 변환해야 하는지'를 결정한다.
+출력은 반드시 JSON 한 줄로만 한다.`
+        },
+        {
+          role: "user",
+          content: `{"action": "send" 또는 "convert", "label": "적절함" 또는 "부적절함", "rationale": "1줄 이유", "converted_text": "변환된 텍스트"}
+
+- convert일 때만 converted_text에 정중하고 간결(한국 비즈니스 톤, ~150자)하게 변환한 결과를 넣어라.
+- rationale은 1줄 한국어로 아주 간단히.
+
+문장: ${text}`
+        }
+      ]
+    };
+    
+    try {
+      const data = await this.makeRequest(requestBody, apiKey);
+      const rawResponse = data?.choices?.[0]?.message?.content || "{}";
+      
+      let parsed;
+      try {
+        parsed = JSON.parse(rawResponse);
+      } catch {
+        parsed = {};
+      }
+      
+      const action = (parsed.action === "convert" || parsed.action === "send") ? parsed.action : "send";
+      
+      return {
+        action,
+        converted_text: parsed.converted_text || "",
+        label: parsed.label || "",
+        rationale: parsed.rationale || ""
+      };
+    } catch (error) {
+      // Fail-safe: default to sending as-is
+      return {
+        action: "send",
+        converted_text: "",
+        label: "",
+        rationale: "결정 실패로 인한 안전 모드"
+      };
+    }
+  }
+}
+
+// Global API service instance
+const openAIService = new OpenAIService();
 
 // ==================== DATA LOADING ====================
 
 /**
  * Loads and parses profanity categories from JSON file
+ * @returns {Promise<Object>} Categories object with strong, weak, adult, slur arrays
  */
 async function loadProfanityCategories() {
-  if (profanityCategoriesCache) {
-    return profanityCategoriesCache;
+  if (state.profanityCategoriesCache) {
+    return state.profanityCategoriesCache;
   }
 
   try {
@@ -83,18 +358,10 @@ async function loadProfanityCategories() {
       }
     });
     
-    profanityCategoriesCache = categories;
-    debugLog("Data", "Profanity categories loaded:", {
-      strong: categories.strong.length,
-      weak: categories.weak.length,
-      adult: categories.adult.length,
-      slur: categories.slur.length,
-      total: data.length
-    });
+    state.profanityCategoriesCache = categories;
     
     return categories;
   } catch (error) {
-    debugLog("Error", "Failed to load profanity categories:", error);
     return {
       strong: [],
       weak: [],
@@ -106,15 +373,52 @@ async function loadProfanityCategories() {
 
 // ==================== UTILITY FUNCTIONS ====================
 
+// ==================== UTILITY FUNCTIONS ====================
+
+/**
+ * Text normalization utilities
+ */
+class TextUtils {
+  /**
+   * Normalizes text by trimming and collapsing whitespace
+   * @param {string} text - Text to normalize
+   * @returns {string} Normalized text
+   */
+  static normalizeText(text) {
+    return (text || "").replace(/\s+/g, " ").trim();
+  }
+  
+  /**
+   * Normalizes Korean text for profanity detection
+   * @param {string} text - Korean text to normalize
+   * @returns {string} Normalized Korean text
+   */
+  static normalizeKoreanText(text) {
+    return text
+      .toLowerCase()
+      .replace(/[\u200B-\u200D\uFEFF]/g, '') // Remove zero-width characters
+      .replace(/[\u0300-\u036F]/g, '') // Remove combining diacritical marks
+      .replace(/[\s\-_.~!@#$%^&*()+={}[\]|\\:;"'<>,.?/]/g, '') // Remove separators
+      .normalize('NFD');
+  }
+  
+  /**
+   * Escapes regex special characters
+   * @param {string} string - String to escape
+   * @returns {string} Escaped string
+   */
+  static escapeRegex(string) {
+    return string.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+  }
+}
+
 /**
  * Logs debug messages when DEBUG mode is enabled
  * @param {string} context - Context of the debug message
  * @param {...any} args - Arguments to log
  */
 function debugLog(context, ...args) {
-  if (CONFIG.DEBUG) {
-    console.log(`[BizTone ${context}]:`, ...args);
-  }
+  // Debug logging disabled for production
 }
 
 /**
@@ -124,7 +428,6 @@ function debugLog(context, ...args) {
  * @returns {Object} Error response object
  */
 function createErrorResponse(message, error = null) {
-  debugLog("Error", message, error);
   return {
     ok: false,
     error: message
@@ -145,15 +448,14 @@ function createSuccessResponse(result) {
 
 /**
  * Loads guard mode settings from storage
+ * @returns {Promise<void>}
  */
 async function loadGuardModeSettings() {
   try {
     const result = await chrome.storage.sync.get(['GUARD_MODE']);
-    guardModeSettings.GUARD_MODE = result.GUARD_MODE || "warn";
-    debugLog("Settings", "Guard mode loaded:", guardModeSettings.GUARD_MODE);
+    state.guardModeSettings.GUARD_MODE = result.GUARD_MODE || "warn";
   } catch (error) {
-    debugLog("Settings", "Failed to load guard mode settings:", error);
-    guardModeSettings.GUARD_MODE = "warn"; // Fallback to default
+    state.guardModeSettings.GUARD_MODE = "warn"; // Fallback to default
   }
 }
 
@@ -162,22 +464,11 @@ async function loadGuardModeSettings() {
  * @returns {string} "convert" or "warn"
  */
 function getGuardMode() {
-  return guardModeSettings.GUARD_MODE || "convert";
+  return state.guardModeSettings.GUARD_MODE || "warn";
 }
 
 // ==================== ADVANCED PROFANITY FILTERING SYSTEM ====================
 
-/**
- * Korean text normalization and preprocessing
- */
-function normalizeKoreanText(text) {
-  return text
-    .toLowerCase()
-    .replace(/[\u200B-\u200D\uFEFF]/g, '') // Remove zero-width characters
-    .replace(/[\u0300-\u036F]/g, '') // Remove combining diacritical marks
-    .replace(/[\s\-_.~!@#$%^&*()+={}[\]|\\:;"'<>,.?/]/g, '') // Remove separators
-    .normalize('NFD');
-}
 
 /**
  * Extract Korean consonant skeleton (초성/종성)
@@ -221,7 +512,7 @@ function extractKoreanSkeleton(text) {
  * Generate categorized noise-tolerant regex pattern
  */
 function generateCategorizedPattern(item) {
-  const normalized = normalizeKoreanText(item.word);
+  const normalized = TextUtils.normalizeKoreanText(item.word);
   const skeleton = extractKoreanSkeleton(normalized);
   
   // Enhanced noise pattern with broader Unicode categories
@@ -230,13 +521,13 @@ function generateCategorizedPattern(item) {
   // Create pattern with noise tolerance
   const noisyPattern = normalized
     .split('')
-    .map(char => escapeRegex(char))
+    .map(char => TextUtils.escapeRegex(char))
     .join(noise);
     
   // Also create skeleton pattern for advanced detection
   const skeletonPattern = skeleton
     .split('')
-    .map(char => escapeRegex(char))
+    .map(char => TextUtils.escapeRegex(char))
     .join(noise);
     
   return {
@@ -255,7 +546,7 @@ function generateCategorizedPattern(item) {
  * Generate noise-tolerant regex pattern (legacy compatibility)
  */
 function generateNoisePattern(word) {
-  const normalized = normalizeKoreanText(word);
+  const normalized = TextUtils.normalizeKoreanText(word);
   const skeleton = extractKoreanSkeleton(normalized);
   
   // Enhanced noise pattern with broader Unicode categories
@@ -264,13 +555,13 @@ function generateNoisePattern(word) {
   // Create pattern with noise tolerance
   const noisyPattern = normalized
     .split('')
-    .map(char => escapeRegex(char))
+    .map(char => TextUtils.escapeRegex(char))
     .join(noise);
     
   // Also create skeleton pattern for advanced detection
   const skeletonPattern = skeleton
     .split('')
-    .map(char => escapeRegex(char))
+    .map(char => TextUtils.escapeRegex(char))
     .join(noise);
     
   return {
@@ -295,12 +586,6 @@ function getCategoryWeight(category) {
   return weights[category] || 1;
 }
 
-/**
- * Escape regex special characters
- */
-function escapeRegex(string) {
-  return string.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
-}
 
 /**
  * Classify word strength (strong vs weak patterns)
@@ -326,11 +611,9 @@ async function loadAndCompilePatterns() {
   }
   
   patternCompilationPromise = (async () => {
-    debugLog('PatternCompiler', '🔄 패턴 컴파일 시작...');
     try {
       // Load categorized word list
       const categoriesUrl = chrome.runtime.getURL('data/fword_categories.json');
-      debugLog('PatternCompiler', `📂 JSON 파일 로딩 시도: ${categoriesUrl}`);
       const categoriesResponse = await fetch(categoriesUrl);
       
       if (!categoriesResponse.ok) {
@@ -338,7 +621,6 @@ async function loadAndCompilePatterns() {
       }
       
       const categorizedWords = await categoriesResponse.json();
-      debugLog('PatternCompiler', `✅ JSON 로딩 성공: ${categorizedWords.length}개 단어`);
       
       // Generate patterns with category metadata
       const patterns = categorizedWords.map(item => generateCategorizedPattern(item));
@@ -354,13 +636,6 @@ async function loadAndCompilePatterns() {
         all: patterns
       };
       
-      debugLog('PatternCompiler', `✅ 패턴 컴파일 완료: ${patterns.length}개 패턴 생성`);
-      debugLog('PatternCompiler', `📊 카테고리별 분포:`);
-      debugLog('PatternCompiler', `  • STRONG: ${categorizedPatterns.strong.length}개 (가중치 +3)`);
-      debugLog('PatternCompiler', `  • ADULT: ${categorizedPatterns.adult.length}개 (가중치 +2)`);
-      debugLog('PatternCompiler', `  • SLUR: ${categorizedPatterns.slur.length}개 (가중치 +3)`);
-      debugLog('PatternCompiler', `  • WEAK: ${categorizedPatterns.weak.length}개 (가중치 +1)`);
-      debugLog('PatternCompiler', `🌐 언어별 분포: 한국어(${categorizedPatterns.ko.length}), 영어(${categorizedPatterns.en.length})`);
       
       compiledPatterns = {
         ...categorizedPatterns,
@@ -370,8 +645,6 @@ async function loadAndCompilePatterns() {
       
       return compiledPatterns;
     } catch (error) {
-      debugLog('PatternCompiler', '❌ 카테고리 JSON 로딩 실패:', error);
-      debugLog('PatternCompiler', '🔄 기본 fword_list.txt 로딩 시도 중...');
       
       try {
         // Fallback to original fword_list.txt
@@ -384,13 +657,9 @@ async function loadAndCompilePatterns() {
           .map(line => line.trim())
           .filter(line => line && !line.startsWith('#'))));
         
-        debugLog('PatternCompiler', `📄 기본 목록에서 ${rawWords.length}개 단어 로딩됨`);
-        
         const fallbackPatterns = rawWords.map(word => generateNoisePattern(word));
         const strongPatterns = fallbackPatterns.filter(p => p.strength === 'strong');
         const weakPatterns = fallbackPatterns.filter(p => p.strength === 'weak');
-        
-        debugLog('PatternCompiler', `⚠️ Fallback 모드: strong(${strongPatterns.length}), weak(${weakPatterns.length})`);
         
         compiledPatterns = {
           strong: strongPatterns,
@@ -406,8 +675,6 @@ async function loadAndCompilePatterns() {
         
         return compiledPatterns;
       } catch (fallbackError) {
-        debugLog('PatternCompiler', '❌ Fallback도 실패:', fallbackError);
-        
         // Last resort: hardcoded patterns
         const basicWords = [
           {word: '씨발', category: 'strong', locale: 'ko'},
@@ -419,8 +686,6 @@ async function loadAndCompilePatterns() {
         ];
         
         const emergencyPatterns = basicWords.map(item => generateCategorizedPattern(item));
-        
-        debugLog('PatternCompiler', `🚨 비상 모드: ${emergencyPatterns.length}개 하드코딩된 패턴 사용`);
         
         compiledPatterns = {
           strong: emergencyPatterns.filter(p => p.category === 'strong'),
@@ -439,23 +704,36 @@ async function loadAndCompilePatterns() {
     }
   })();
   
-  return patternCompilationPromise;
+  return state.patternCompilationPromise;
 }
 
 /**
- * Advanced risk assessment algorithm V2 with categorized patterns and detailed logging
+ * Advanced risk assessment algorithm with categorized Korean profanity detection
+ * 
+ * Uses compiled regex patterns to detect various categories of inappropriate content:
+ * - Strong profanity (weight: 3 points)
+ * - Slurs (weight: 3 points) 
+ * - Adult content (weight: 2 points)
+ * - Weak profanity (weight: 1 point)
+ * 
+ * @param {string} text - Text to analyze for risk factors
+ * @returns {Promise<Object>} Risk assessment result
+ * @property {number} result.score - Final risk score (0-10)
+ * @property {Array} result.matches - Array of detected profanity matches
+ * @property {Object} result.contextual - Contextual risk factors
+ * @property {string} result.riskLevel - 'LOW', 'MEDIUM', or 'HIGH'
+ * @property {Object} result.categoryStats - Count of matches by category
+ * @example
+ * // Usage
+ * const result = await calculateAdvancedRiskScore("안녕하세요");
+ * console.log(result.score); // 0
+ * console.log(result.riskLevel); // 'LOW'
  */
 async function calculateAdvancedRiskScore(text) {
   const normalized = normalizeKoreanText(text);
   const skeleton = extractKoreanSkeleton(normalized);
   
-  debugLog('RiskAssessment', '='.repeat(60));
-  debugLog('RiskAssessment', `📊 점수 계산 시작: "${text}"`);
-  debugLog('RiskAssessment', `📝 정규화 텍스트: "${normalized}"`);
-  debugLog('RiskAssessment', `🔤 한글 스켈레톤: "${skeleton}"`);
-  
   if (!normalized) {
-    debugLog('RiskAssessment', '❌ 정규화된 텍스트가 없어서 점수 0 반환');
     return { score: 0, matches: [], contextual: { score: 0, factors: [] } };
   }
   
@@ -463,8 +741,6 @@ async function calculateAdvancedRiskScore(text) {
   let score = 0;
   let matches = [];
   let categoryStats = { strong: 0, weak: 0, adult: 0, slur: 0 };
-  
-  debugLog('RiskAssessment', `🎯 패턴 검사 시작: 총 ${patterns.all.length}개 패턴`);
   
   // Check all patterns with their specific weights
   for (const pattern of patterns.all) {
@@ -474,9 +750,6 @@ async function calculateAdvancedRiskScore(text) {
     if (directMatch || skeletonMatch) {
       score += pattern.weight;
       categoryStats[pattern.category]++;
-      
-      const matchType = directMatch ? '직접' : '스켈레톤';
-      debugLog('RiskAssessment', `🚨 매칭됨: "${pattern.original}" (${pattern.category}/${pattern.locale}, +${pattern.weight}점, ${matchType})`);
       
       matches.push({ 
         word: pattern.word, 
@@ -490,30 +763,17 @@ async function calculateAdvancedRiskScore(text) {
     }
   }
   
-  debugLog('RiskAssessment', `📈 패턴 매칭 완료: ${matches.length}개 일치`);
-  debugLog('RiskAssessment', `📊 카테고리별 매칭: strong(${categoryStats.strong}), adult(${categoryStats.adult}), slur(${categoryStats.slur}), weak(${categoryStats.weak})`);
-  debugLog('RiskAssessment', `🎯 현재 점수 (패턴): ${score}점`);
-  
   // Additional context scoring
   const contextScore = calculateContextualRisk(text);
   const patternScore = score;
   score += contextScore.score;
   
-  debugLog('RiskAssessment', `🔍 문맥 분석 완료: +${contextScore.score}점`);
-  if (contextScore.factors.length > 0) {
-    debugLog('RiskAssessment', `📋 문맥 요소들: ${contextScore.factors.join(', ')}`);
-  }
-  
   const finalScore = Math.min(score, 10);
-  debugLog('RiskAssessment', `🎯 최종 점수: ${finalScore}점 (패턴: ${patternScore}점 + 문맥: ${contextScore.score}점 = ${score}점, 최대 10점)`);
   
   // 점수 기준 판정
   let riskLevel = 'LOW';
   if (finalScore >= 4) riskLevel = 'HIGH';
   else if (finalScore >= 2) riskLevel = 'MEDIUM';
-  
-  debugLog('RiskAssessment', `⚠️ 위험도: ${riskLevel} (기준: 0-1=LOW, 2-3=MEDIUM, 4+=HIGH)`);
-  debugLog('RiskAssessment', '='.repeat(60));
   
   return {
     score: finalScore,
@@ -533,13 +793,11 @@ async function calculateAdvancedRiskScore(text) {
 }
 
 /**
- * Calculate contextual risk factors with detailed logging
+ * Calculate contextual risk factors
  */
 function calculateContextualRisk(text) {
   let score = 0;
   const factors = [];
-  
-  debugLog('ContextAnalysis', `🔍 문맥 분석 시작: "${text}"`);
   
   // Excessive punctuation
   const exclamationCount = (text.match(/!+/g) || []).length;
@@ -548,19 +806,16 @@ function calculateContextualRisk(text) {
   if (exclamationCount >= 2) {
     score += 0.5;
     factors.push('excessive_exclamation');
-    debugLog('ContextAnalysis', `❗ 과도한 느낌표 발견: ${exclamationCount}개, +0.5점`);
   }
   
   if (questionCount >= 2) {
     score += 0.5;
     factors.push('excessive_question');
-    debugLog('ContextAnalysis', `❓ 과도한 물음표 발견: ${questionCount}개, +0.5점`);
   }
   
   if (text.includes('?!') || text.includes('!?')) {
     score += 0.5;
     factors.push('mixed_punctuation');
-    debugLog('ContextAnalysis', `‼️ 혼합 구두점 발견: +0.5점`);
   }
   
   // Aggressive words
@@ -569,7 +824,6 @@ function calculateContextualRisk(text) {
     if (text.includes(word)) {
       score += 0.3;
       factors.push(`aggressive_${word}`);
-      debugLog('ContextAnalysis', `🔥 공격적 단어 발견: "${word}", +0.3점`);
     }
   }
   
@@ -579,10 +833,7 @@ function calculateContextualRisk(text) {
   if (letters.length >= 6 && uppercase.length / letters.length >= 0.5) {
     score += 0.5;
     factors.push('excessive_caps');
-    debugLog('ContextAnalysis', `🔠 과도한 대문자 발견: ${uppercase.length}/${letters.length}, +0.5점`);
   }
-  
-  debugLog('ContextAnalysis', `✅ 문맥 분석 완료: ${score}점 (${factors.length}개 요소)`);
   
   return { score, factors };
 }
@@ -632,7 +883,6 @@ async function isTextWhitelisted(text) {
 async function calculateAdvancedRiskScoreWithWhitelist(text) {
   // Check whitelist first
   if (await isTextWhitelisted(text)) {
-    debugLog('AdvancedRisk', `Text whitelisted: "${text}"`);
     return {
       score: 0,
       matches: [],
@@ -676,44 +926,34 @@ async function safeSendMessage(tabId, message, frameId = undefined) {
       if (!resolved) {
         resolved = true;
         resolve(result);
-      } else {
-        console.log(`⚠️ safeSendMessage: Prevented duplicate resolution for ${message.type}`);
       }
     };
 
-    const handleCallback = (response) => {
+    const handleCallback = () => {
       if (chrome.runtime.lastError) {
-        console.log(`❌ First attempt failed: ${chrome.runtime.lastError.message}`);
-        
         // Only try fallback if not already resolved
         if (!resolved) {
           try {
-            chrome.tabs.sendMessage(tabId, message, (fallbackResponse) => {
+            chrome.tabs.sendMessage(tabId, message, () => {
               if (chrome.runtime.lastError) {
-                console.log(`❌ Fallback failed: ${chrome.runtime.lastError.message}`);
                 safeResolve(false);
               } else {
-                console.log(`✅ Fallback succeeded`);
                 safeResolve(true);
               }
             });
           } catch (error) {
-            console.log(`❌ Fallback exception:`, error);
             safeResolve(false);
           }
         }
       } else {
-        console.log(`✅ First attempt succeeded`);
         safeResolve(true);
       }
     };
 
     try {
       const options = typeof frameId === "number" ? { frameId } : undefined;
-      console.log(`📨 Sending message with options:`, options);
       chrome.tabs.sendMessage(tabId, message, options, handleCallback);
     } catch (error) {
-      console.log(`❌ Primary exception:`, error);
       safeResolve(false);
     }
   });
@@ -726,21 +966,13 @@ async function safeSendMessage(tabId, message, frameId = undefined) {
  */
 async function ensureContentScript(tabId) {
   try {
-    console.log(`💫 Injecting content script into tab ${tabId} (allFrames: true)`);
     const results = await chrome.scripting.executeScript({
       target: { tabId, allFrames: true },
       files: ["contentScript.js"],
       injectImmediately: true
     });
-    console.log(`✅ Content script injection successful - ${results?.length || 0} frames affected`);
-    if (results?.length > 1) {
-      console.warn(`⚠️ MULTIPLE FRAMES DETECTED: ${results.length} frames! This might cause duplicate execution.`);
-      results.forEach((result, i) => {
-        console.log(`   Frame ${i}: ${result.frameId || 'main'}, URL: ${result.documentId || 'unknown'}`);
-      });
-    }
+    return results;
   } catch (error) {
-    console.warn(`❌ Content script injection failed for tab ${tabId}:`, error?.message);
     throw new Error(`Content script injection failed: ${error?.message || error}`);
   }
 }
@@ -843,7 +1075,6 @@ async function callOpenAI(requestBody, apiKey) {
         
         // Exponential backoff for rate limit
         const delay = 500 * attempt * attempt; // 0.5s, 2s, 4.5s
-        debugLog("OpenAI", `Rate limited (429), retrying in ${delay}ms (attempt ${attempt}/3)`);
         await new Promise(resolve => setTimeout(resolve, delay));
         
       } catch (error) {
@@ -854,7 +1085,6 @@ async function callOpenAI(requestBody, apiKey) {
         
         // Network error backoff
         const delay = 1000 * attempt;
-        debugLog("OpenAI", `Network error, retrying in ${delay}ms (attempt ${attempt}/3):`, error.message);
         await new Promise(resolve => setTimeout(resolve, delay));
       }
     }
@@ -915,7 +1145,6 @@ ${text}
     const result = data?.choices?.[0]?.message?.content || text;
     return result.trim();
   } catch (error) {
-    debugLog("ConvertTone", "Conversion failed:", error);
     throw new Error(`텍스트 변환 실패: ${error.message}`);
   }
 }
@@ -972,7 +1201,6 @@ async function decideTextAction(text, model, apiKey) {
       rationale: parsed.rationale || ""
     };
   } catch (error) {
-    debugLog("DecideAction", "Decision failed:", error);
     // Fail-safe: default to sending as-is
     return {
       action: "send",
@@ -1034,7 +1262,6 @@ async function getSelectionFromAllFrames(tabId) {
 
     return { text: "", frameId: undefined, kind: "none" };
   } catch (error) {
-    debugLog("Selection", "Failed to extract selection:", error);
     return { text: "", frameId: undefined, kind: "error" };
   }
 }
@@ -1095,7 +1322,6 @@ async function handleAdvancedRiskAssessment(text, sendResponse) {
     const result = await calculateAdvancedRiskScoreWithWhitelist(String(text || ""));
     sendResponse(createSuccessResponse(result));
   } catch (error) {
-    debugLog("AdvancedRisk", "Assessment failed:", error);
     sendResponse(createErrorResponse("위험도 평가 실패"));
   }
 }
@@ -1110,9 +1336,9 @@ chrome.runtime.onInstalled.addListener(() => {
       title: "비즈니스 문장으로 변경",
       contexts: ["selection"]
     });
-    debugLog("Init", "Context menu created");
+    // Context menu created
   } catch (error) {
-    debugLog("Init", "Context menu creation failed (may already exist):", error);
+    // Context menu creation failed (may already exist)
   }
 });
 
@@ -1216,7 +1442,7 @@ chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
         break;
 
       default:
-        debugLog("Message", "Unknown message type:", message.type);
+        // Unknown message type
     }
   })();
 
@@ -1224,45 +1450,26 @@ chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
 });
 
 // Handle keyboard shortcut commands
-let commandCount = 0;
 chrome.commands.onCommand.addListener(async (command) => {
-  commandCount++;
-  const timestamp = Date.now();
-  console.log(`🎯 BACKGROUND COMMAND #${commandCount}: "${command}" at ${timestamp}`);
-  
   if (command !== "convert-selection") {
-    console.log(`❌ Ignoring unknown command: ${command}`);
     return;
   }
 
   // Debounce rapid key presses
-  const now = Date.now();
-  const gap = debounceTimestamp ? now - debounceTimestamp : 'FIRST';
-  console.log(`🕒 Debounce check: gap=${gap}ms, threshold=${CONFIG.DEBOUNCE_MS}ms, count=${commandCount}`);
-  
-  if (typeof gap === 'number' && gap < CONFIG.DEBOUNCE_MS) {
-    console.warn(`❌ DEBOUNCED: Command #${commandCount} ignored (gap: ${gap}ms < ${CONFIG.DEBOUNCE_MS}ms)`);
+  if (state.shouldDebounce()) {
     return;
   }
-  debounceTimestamp = now;
-  console.log(`✅ Processing command #${commandCount}...`);
 
   const [activeTab] = await chrome.tabs.query({ active: true, currentWindow: true });
   if (!activeTab?.id) {
-    console.log(`❌ No active tab found`);
     return;
   }
-  
-  console.log(`🎯 Active tab: ${activeTab.id} - ${activeTab.url}`);
 
   // Ensure content script is ready
-  console.log(`📋 Ensuring content listener for tab ${activeTab.id}...`);
   const hasListener = await ensureContentListener(activeTab.id);
   if (!hasListener) {
-    console.warn(`❌ Failed to ensure content listener for tab ${activeTab.id}`);
     return;
   }
-  console.log(`✅ Content listener ready for tab ${activeTab.id}`);
 
   // Get selected text
   const selection = await getSelectionFromAllFrames(activeTab.id);
@@ -1286,18 +1493,13 @@ chrome.commands.onCommand.addListener(async (command) => {
   }
 
   // Convert and replace text directly
-  console.log(`🔄 Converting text: "${selection.text?.slice(0, 50)}..."`);
   try {
     const convertedText = await convertToBusinessTone(selection.text, model, key);
-    console.log(`✅ Conversion successful: "${convertedText?.slice(0, 50)}..."`);
-    console.log(`📨 Sending REPLACE_WITH message to tab ${activeTab.id}, frame ${selection.frameId || 'top'}`);
     
-    const messageSent = await safeSendMessage(activeTab.id, {
+    await safeSendMessage(activeTab.id, {
       type: MESSAGE_TYPES.BIZTONE_REPLACE_WITH,
       text: convertedText
     }, selection.frameId);
-    
-    console.log(`📨 Message sent result: ${messageSent}`);
   } catch (error) {
     await safeSendMessage(activeTab.id, {
       type: MESSAGE_TYPES.BIZTONE_ERROR,
@@ -1310,12 +1512,11 @@ chrome.commands.onCommand.addListener(async (command) => {
 chrome.storage.onChanged.addListener((changes, areaName) => {
   if (areaName === 'sync' && changes.GUARD_MODE) {
     const newValue = changes.GUARD_MODE.newValue;
-    debugLog("Settings", "Guard mode changed to:", newValue);
-    guardModeSettings.GUARD_MODE = newValue || "convert";
+    state.guardModeSettings.GUARD_MODE = newValue || "warn";
   }
 });
 
-debugLog("Init", "Background script initialized");
+// Background script initialized
 
 // ==================== DOMAIN RULES MESSAGE HANDLERS ====================
 
@@ -1332,7 +1533,6 @@ async function handleGetDomainStatus(message, sendResponse) {
     const status = await getDomainStatus(domain);
     sendResponse(createSuccessResponse(status));
   } catch (error) {
-    debugLog('DomainHandler', 'Get status failed:', error);
     sendResponse(createErrorResponse('Failed to get domain status'));
   }
 }
@@ -1380,7 +1580,6 @@ async function handlePauseDomain(message, sendResponse) {
       pausedFor: minutes 
     }));
   } catch (error) {
-    debugLog('DomainHandler', 'Pause failed:', error);
     sendResponse(createErrorResponse('Failed to pause domain'));
   }
 }
@@ -1393,7 +1592,6 @@ async function handleGetDomainRules(message, sendResponse) {
     const rules = await getDomainRules();
     sendResponse(createSuccessResponse(rules));
   } catch (error) {
-    debugLog('DomainHandler', 'Get rules failed:', error);
     sendResponse(createErrorResponse('Failed to get domain rules'));
   }
 }
@@ -1416,7 +1614,6 @@ async function handleSetDomainRule(message, sendResponse) {
       sendResponse(createErrorResponse('Failed to save domain rule'));
     }
   } catch (error) {
-    debugLog('DomainHandler', 'Set rule failed:', error);
     sendResponse(createErrorResponse('Failed to set domain rule'));
   }
 }
@@ -1442,7 +1639,6 @@ async function handleRemoveDomainRule(message, sendResponse) {
       sendResponse(createErrorResponse('Failed to remove domain rule'));
     }
   } catch (error) {
-    debugLog('DomainHandler', 'Remove rule failed:', error);
     sendResponse(createErrorResponse('Failed to remove domain rule'));
   }
 }
@@ -1462,7 +1658,6 @@ function getDomainFromUrl(url) {
     const urlObj = new URL(url);
     return urlObj.hostname.toLowerCase();
   } catch (error) {
-    debugLog('DomainRules', `Invalid URL: ${url}`);
     return null;
   }
 }
@@ -1475,7 +1670,6 @@ async function getDomainRules() {
     const result = await chrome.storage.sync.get([DOMAIN_RULES_KEY]);
     return result[DOMAIN_RULES_KEY] || {};
   } catch (error) {
-    debugLog('DomainRules', 'Failed to get domain rules:', error);
     return {};
   }
 }
@@ -1486,10 +1680,8 @@ async function getDomainRules() {
 async function saveDomainRules(rules) {
   try {
     await chrome.storage.sync.set({ [DOMAIN_RULES_KEY]: rules });
-    debugLog('DomainRules', '✅ Domain rules saved successfully');
     return true;
   } catch (error) {
-    debugLog('DomainRules', '❌ Failed to save domain rules:', error);
     return false;
   }
 }
@@ -1507,7 +1699,6 @@ async function isDomainEnabled(domain) {
   
   // Check if paused
   if (rule.pauseUntil && rule.pauseUntil > Date.now()) {
-    debugLog('DomainRules', `🔇 Domain ${domain} is paused until ${new Date(rule.pauseUntil)}`);
     return false;
   }
   
@@ -1538,7 +1729,6 @@ async function setDomainRule(domain, options = {}) {
     updatedAt: Date.now()
   };
   
-  debugLog('DomainRules', `🔧 Set rule for ${domain}:`, rules[domain]);
   return await saveDomainRules(rules);
 }
 
@@ -1549,7 +1739,6 @@ async function removeDomainRule(domain) {
   const rules = await getDomainRules();
   if (rules[domain]) {
     delete rules[domain];
-    debugLog('DomainRules', `🗑️ Removed rule for ${domain}`);
     return await saveDomainRules(rules);
   }
   return true;
@@ -1588,7 +1777,6 @@ async function toggleDomainEnabled(domain) {
     pauseUntil: 0 // Clear any pause when toggling
   });
   
-  debugLog('DomainRules', `🔄 Toggled ${domain}: ${newEnabled ? 'ON' : 'OFF'}`);
   return newEnabled;
 }
 
@@ -1630,19 +1818,12 @@ async function getDomainStatus(domain) {
  */
 (async () => {
   try {
-    debugLog("Startup", "🚀 Starting initialization...");
-    const startTime = Date.now();
-    
     // Load settings first
     await loadGuardModeSettings();
     
     // Then compile patterns
     await loadAndCompilePatterns();
-    
-    const duration = Date.now() - startTime;
-    debugLog("Startup", `✅ Initialization completed in ${duration}ms`);
-    debugLog("Startup", `📊 Ready for zero-latency guard operations with ${getGuardMode()} mode`);
   } catch (error) {
-    debugLog("Startup", "⚠️ Initialization failed:", error);
+    // Initialization failed - extension will still work with reduced functionality
   }
 })();

@@ -1,51 +1,61 @@
 /**
  * BizTone Chrome Extension - Content Script
- * Handles hybrid guard system, UI bubbles, and text replacement
+ * Enterprise-grade hybrid guard system with real-time detection and Enter key protection
+ * 
+ * @author BizTone Team
+ * @version 2.0
+ * @description Handles real-time profanity detection, Enter key guard, UI components, and text replacement
  */
 
 (() => {
   // Prevent duplicate injection
   if (window.__BIZTONE_CS_LOADED__) {
-    console.warn(`❌ BizTone ContentScript already loaded in frame: ${window.self === window.top ? 'TOP' : 'IFRAME'} - ${window.location.href}`);
     return;
   }
   window.__BIZTONE_CS_LOADED__ = true;
-  
-  const loadFrameInfo = window.self === window.top ? 'TOP-FRAME' : `IFRAME(${window.location.href})`;
-  console.log(`✅ BizTone ContentScript loading in ${loadFrameInfo}`);
 
-  // ==================== CONSTANTS & CONFIGURATION ====================
+  // ==================== CONFIGURATION ====================
 
+  /**
+   * Configuration object for the content script
+   * @readonly
+   */
   const CONFIG = {
-    // Prefilter thresholds - Balanced for warn mode
+    // Risk assessment thresholds
     PREFILTER: {
       PASS_MAX: 1,     // Score ≤ 1: allow immediate send
       CONVERT_MIN: 4   // Score ≥ 4: strong profanity/convert, 2-3: medium risk/prompt
     },
     
-    // Cache settings
+    // Cache configuration
     CACHE: {
-      TTL_MS: 90_000, // 90 seconds
+      TTL_MS: 90_000, // 90 seconds cache TTL
     },
     
-    // Guard settings
+    // Guard system settings
     GUARD: {
-      ENABLED: true,               // Master guard enable/disable
+      ENABLED: true,
       PROMPT_ENABLED: true,
       AUTO_SEND_CONVERTED: false,
-      FAIL_OPEN_ON_CONVERT_ERROR: false, // Security: don't auto-send on conversion failure
+      FAIL_OPEN_ON_CONVERT_ERROR: false, // Security: block on conversion failure
       FAIL_OPEN_ON_DECISION_ERROR: true  // UX: allow send if AI decision fails
     },
     
-    // UI settings
+    // UI component settings
     UI: {
       TOAST_DURATION: 1800,
       BUBBLE_OFFSET: 8,
       MIN_POSITION: 10
     },
     
-    // Performance settings
-    DEBOUNCE_MS: 350 // Prevent duplicate processing
+    // Performance tuning
+    DEBOUNCE_MS: 350, // Prevent duplicate processing
+    REALTIME: {
+      MIN_DEBOUNCE: 150,  // Minimum delay for real-time detection
+      MAX_DEBOUNCE: 600,  // Maximum delay for real-time detection
+      INSTANT_THRESHOLD: 3, // Score threshold for instant detection
+      MAX_TEXT_LENGTH: 500  // Skip real-time for very long text
+    }
   };
 
   const MESSAGE_TYPES = {
@@ -77,36 +87,102 @@
     slur: []
   };
 
-  // ==================== GLOBAL STATE ====================
+  // ==================== STATE MANAGEMENT ====================
 
-  let bubbleElement = null;
-  let lastSelectionRange = null;
-  let lastInputSelection = null;
-  let lastActiveElement = null;
-
-  // Guard processing state
-  let __BIZTONE_PENDING = false;
-  let __BIZTONE_LAST_TS = 0;
-  let __BIZTONE_GUARD_MODE = "warn"; // Default mode: warn (recommended)
-  let __BIZTONE_GUARD_MODE_CACHED = false; // Cache flag for guard mode
-  let __BIZTONE_WARNING_SHOWN = false;
-  let __BIZTONE_FORM_CLEANUP = null; // Store form prevention cleanup function
+  /**
+   * Content script state manager
+   */
+  class BizToneContentState {
+    constructor() {
+      // UI state
+      this.bubbleElement = null;
+      this.lastSelectionRange = null;
+      this.lastInputSelection = null;
+      this.lastActiveElement = null;
+      
+      // Guard processing state
+      this.pending = false;
+      this.lastTimestamp = 0;
+      this.guardMode = "warn";
+      this.guardModeCached = false;
+      this.warningShown = false;
+      this.formCleanup = null;
+      
+      // Message processing state
+      this.lastMessageTimestamp = 0;
+      this.lastMessageType = null;
+      
+      // Real-time detection state
+      this.realtimeBadges = new Map();
+      this.realtimeDebounce = null;
+      this.monitoredInputs = new Set();
+      this.lastDetectionTime = 0;
+      this.badgeTimers = new Map();
+      
+      // Cache management
+      this.guardCache = new Map();
+      this.elementSpecificCache = new WeakMap();
+    }
+    
+    /**
+     * Check if guard processing should be debounced
+     * @returns {boolean} True if should skip (duplicate)
+     */
+    shouldSkipDuplicate() {
+      const now = Date.now();
+      if (this.pending) return true;
+      if (now - this.lastTimestamp < CONFIG.DEBOUNCE_MS) return true;
+      
+      this.pending = true;
+      this.lastTimestamp = now;
+      return false;
+    }
+    
+    /**
+     * Clear pending guard state
+     */
+    clearPendingGuard() {
+      this.pending = false;
+    }
+    
+    /**
+     * Check message deduplication
+     * @param {string} messageType - Message type
+     * @returns {boolean} True if should skip (duplicate)
+     */
+    shouldSkipMessage(messageType) {
+      const now = Date.now();
+      const isDuplicate = (
+        this.lastMessageType === messageType &&
+        now - this.lastMessageTimestamp < 100
+      );
+      
+      if (!isDuplicate) {
+        this.lastMessageTimestamp = now;
+        this.lastMessageType = messageType;
+      }
+      
+      return isDuplicate;
+    }
+    
+    /**
+     * Reset all state
+     */
+    reset() {
+      this.pending = false;
+      this.guardModeCached = false;
+      this.realtimeBadges.clear();
+      this.monitoredInputs.clear();
+      this.badgeTimers.clear();
+      this.guardCache.clear();
+    }
+  }
   
-  // Message processing state to prevent duplicates
-  let __BIZTONE_LAST_MESSAGE_TS = 0;
-  let __BIZTONE_LAST_MESSAGE_TYPE = null;
-
-  // Real-time detection state
-  let __BIZTONE_REALTIME_BADGES = new Map(); // Track active warning badges
-  let __BIZTONE_REALTIME_DEBOUNCE = null;
-  let __BIZTONE_MONITORED_INPUTS = new Set(); // Track inputs we're monitoring
-  let __BIZTONE_LAST_DETECTION_TIME = 0; // For adaptive timing
-  let __BIZTONE_BADGE_TIMERS = new Map(); // Track badge removal timers
-
-  // Initialize cache and regex - Use element-specific cache to prevent cross-element issues
-  const guardCache = new Map(); // Global cache for compatibility
-  const elementSpecificCache = new WeakMap(); // Element-specific cache
-  const profanityRegex = new RegExp(
+  // Global state instance
+  const state = new BizToneContentState();
+  
+  // Initialize profanity regex (will be updated when data loads)
+  let profanityRegex = new RegExp(
     RISK_VOCABULARY.PROFANITY.map(word => word.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")).join("|"), 
     "i"
   );
@@ -141,17 +217,10 @@
             ...PROFANITY_CATEGORIES.slur
           ];
           
-          console.debug("[BizTone] Profanity data loaded:", {
-            strong: PROFANITY_CATEGORIES.strong.length,
-            weak: PROFANITY_CATEGORIES.weak.length,
-            adult: PROFANITY_CATEGORIES.adult.length,
-            slur: PROFANITY_CATEGORIES.slur.length,
-            total: RISK_VOCABULARY.PROFANITY.length
-          });
+          // Profanity data loaded successfully
           
           resolve(true);
         } else {
-          console.warn("[BizTone] Failed to load profanity data from background");
           resolve(false);
         }
       });
@@ -184,7 +253,6 @@
       
       return true;
     } catch (error) {
-      console.debug("[BizTone] Extension context check failed:", error);
       return false;
     }
   }
@@ -197,7 +265,6 @@
    */
   function safeSendMessage(message, callback) {
     if (!isExtensionContextValid()) {
-      console.warn("[BizTone] Extension context invalidated - message not sent:", message.type);
       if (callback) callback(null);
       return false;
     }
@@ -205,7 +272,6 @@
     try {
       chrome.runtime.sendMessage(message, (response) => {
         if (chrome.runtime.lastError) {
-          console.warn("[BizTone] Message sending failed:", chrome.runtime.lastError.message);
           if (callback) callback(null);
         } else {
           if (callback) callback(response);
@@ -213,19 +279,28 @@
       });
       return true;
     } catch (error) {
-      console.warn("[BizTone] Exception during message sending:", error);
       if (callback) callback(null);
       return false;
     }
   }
 
   /**
-   * Normalizes text by trimming and collapsing whitespace
-   * @param {string} text - Text to normalize
-   * @returns {string} Normalized text
+   * Text normalization utilities - shared with background script
    */
+  class TextUtils {
+    /**
+     * Normalizes text by trimming and collapsing whitespace
+     * @param {string} text - Text to normalize
+     * @returns {string} Normalized text
+     */
+    static normalizeText(text) {
+      return (text || "").replace(/\s+/g, " ").trim();
+    }
+  }
+  
+  // Legacy function for backward compatibility
   function normalizeText(text) {
-    return (text || "").replace(/\s+/g, " ").trim();
+    return TextUtils.normalizeText(text);
   }
 
   /**
@@ -242,20 +317,14 @@
    * @returns {boolean} True if should skip processing (duplicate)
    */
   function shouldSkipDuplicate() {
-    const now = Date.now();
-    if (__BIZTONE_PENDING) return true; // Already processing
-    if (now - __BIZTONE_LAST_TS < CONFIG.DEBOUNCE_MS) return true; // Debounce
-    
-    __BIZTONE_PENDING = true;
-    __BIZTONE_LAST_TS = now;
-    return false;
+    return state.shouldSkipDuplicate();
   }
 
   /**
    * Clear pending guard state
    */
   function clearPendingGuard() {
-    __BIZTONE_PENDING = false;
+    state.clearPendingGuard();
   }
 
   /**
@@ -263,8 +332,8 @@
    */
   async function getGuardMode() {
     // Return cached value if available
-    if (__BIZTONE_GUARD_MODE_CACHED) {
-      return __BIZTONE_GUARD_MODE;
+    if (state.guardModeCached) {
+      return state.guardMode;
     }
     
     try {
@@ -273,16 +342,15 @@
       });
       
       if (response?.ok && response.result?.guardMode) {
-        __BIZTONE_GUARD_MODE = response.result.guardMode;
-        __BIZTONE_GUARD_MODE_CACHED = true;
+        state.guardMode = response.result.guardMode;
+        state.guardModeCached = true;
       }
     } catch (error) {
-      console.warn('[BizTone] Failed to get guard mode, using default:', error);
-      __BIZTONE_GUARD_MODE = "warn"; // fallback to default
-      __BIZTONE_GUARD_MODE_CACHED = true; // Cache the default too
+      state.guardMode = "warn"; // fallback to default
+      state.guardModeCached = true; // Cache the default too
     }
     
-    return __BIZTONE_GUARD_MODE;
+    return state.guardMode;
   }
 
   /**
@@ -306,7 +374,7 @@
           form.submit();
         }
       } catch (error) {
-        console.debug("[BizTone] Form submit fallback failed:", error);
+        // Form submit fallback failed
       }
     }
   }
@@ -613,8 +681,8 @@
     const key = normalizeText(text);
     
     // Try element-specific cache first if element provided
-    if (element && elementSpecificCache.has(element)) {
-      const elementCache = elementSpecificCache.get(element);
+    if (element && state.elementSpecificCache.has(element)) {
+      const elementCache = state.elementSpecificCache.get(element);
       const item = elementCache.get(key);
       
       if (item) {
@@ -627,11 +695,11 @@
     }
     
     // Fallback to global cache
-    const item = guardCache.get(key);
+    const item = state.guardCache.get(key);
     if (!item) return null;
     
     if (Date.now() - item.timestamp > CONFIG.CACHE.TTL_MS) {
-      guardCache.delete(key);
+      state.guardCache.delete(key);
       return null;
     }
     
@@ -653,15 +721,15 @@
     
     // Store in element-specific cache if element provided
     if (element) {
-      if (!elementSpecificCache.has(element)) {
-        elementSpecificCache.set(element, new Map());
+      if (!state.elementSpecificCache.has(element)) {
+        state.elementSpecificCache.set(element, new Map());
       }
-      const elementCache = elementSpecificCache.get(element);
+      const elementCache = state.elementSpecificCache.get(element);
       elementCache.set(key, cacheItem);
     }
     
     // Also store in global cache for compatibility
-    guardCache.set(key, cacheItem);
+    state.guardCache.set(key, cacheItem);
   }
 
   /**
@@ -669,8 +737,8 @@
    * @param {HTMLElement} element - Input element
    */
   function clearElementCache(element) {
-    if (element && elementSpecificCache.has(element)) {
-      elementSpecificCache.delete(element);
+    if (element && state.elementSpecificCache.has(element)) {
+      state.elementSpecificCache.delete(element);
     }
   }
 
@@ -812,18 +880,18 @@
    * Restores focus and selection for contentEditable elements
    */
   function focusAndRestoreSelection() {
-    if (lastSelectionRange) {
+    if (state.lastSelectionRange) {
       const selection = window.getSelection();
       if (selection) {
         try {
           selection.removeAllRanges();
-          selection.addRange(lastSelectionRange);
+          selection.addRange(state.lastSelectionRange);
         } catch (error) {
           // Selection restoration failed
         }
       }
 
-      const editableHost = lastSelectionRange.startContainer?.parentElement?.closest("[contenteditable=''], [contenteditable='true']");
+      const editableHost = state.lastSelectionRange.startContainer?.parentElement?.closest("[contenteditable=''], [contenteditable='true']");
       if (editableHost && typeof editableHost.focus === "function") {
         try {
           editableHost.focus();
@@ -840,21 +908,21 @@
    * @returns {boolean} Success status
    */
   function replaceSelectedText(newText) {
-    console.log(`🔄 replaceSelectedText called with: "${newText?.slice(0, 50)}..."`);    
+    // Replace selected text called    
     let replaced = false;
 
     // Handle input/textarea selection
-    if (lastActiveElement && lastInputSelection && (lastActiveElement === document.activeElement)) {
-      const element = lastActiveElement;
-      const { start, end, value } = lastInputSelection;
+    if (state.lastActiveElement && state.lastInputSelection && (state.lastActiveElement === document.activeElement)) {
+      const element = state.lastActiveElement;
+      const { start, end, value } = state.lastInputSelection;
       
       if (typeof start === "number" && typeof end === "number") {
-        console.log(`📝 Replacing input text: [${start}-${end}] "${value.slice(start, end)}" → "${newText.slice(0, 30)}..."`);        
+        // Replacing input text        
         element.value = value.slice(0, start) + newText + value.slice(end);
         element.selectionStart = element.selectionEnd = start + newText.length;
         dispatchInputEvents(element);
         replaced = true;
-        console.log(`✅ Input replacement successful`);
+        // Input replacement successful
       }
     }
 
@@ -894,14 +962,14 @@
           }
           
           replaced = true;
-          console.log(`✅ ContentEditable replacement successful`);
+          // ContentEditable replacement successful
         }
       } catch (error) {
-        console.log(`❌ ContentEditable replacement failed:`, error);
+        // ContentEditable replacement failed
       }
     }
     
-    console.log(`🔄 replaceSelectedText result: ${replaced}`);
+    // Text replacement completed
     return replaced;
   }
   
@@ -957,10 +1025,10 @@
    * Removes the current bubble UI
    */
   function removeBubble() {
-    if (bubbleElement?.parentNode) {
-      bubbleElement.parentNode.removeChild(bubbleElement);
+    if (state.bubbleElement?.parentNode) {
+      state.bubbleElement.parentNode.removeChild(state.bubbleElement);
     }
-    bubbleElement = null;
+    state.bubbleElement = null;
   }
 
   /**
@@ -987,28 +1055,28 @@
     // Store selection info
     const selectionInfo = getSelectionRect();
     if (selectionInfo?.range) {
-      lastSelectionRange = selectionInfo.range.cloneRange();
+      state.lastSelectionRange = selectionInfo.range.cloneRange();
     }
 
     // Store input selection info
     const activeElement = document.activeElement;
-    lastActiveElement = activeElement || null;
+    state.lastActiveElement = activeElement || null;
     if (activeElement && 
         (activeElement.tagName === "TEXTAREA" || 
          (activeElement.tagName === "INPUT" && activeElement.type === "text"))) {
-      lastInputSelection = {
+      state.lastInputSelection = {
         start: activeElement.selectionStart,
         end: activeElement.selectionEnd,
         value: activeElement.value
       };
     } else {
-      lastInputSelection = null;
+      state.lastInputSelection = null;
     }
 
     // Create bubble
-    bubbleElement = document.createElement("div");
-    bubbleElement.className = "biztone-bubble";
-    bubbleElement.innerHTML = `
+    state.bubbleElement = document.createElement("div");
+    state.bubbleElement.className = "biztone-bubble";
+    state.bubbleElement.innerHTML = `
       <div class="biztone-header">
         <span class="biztone-title">BizTone</span>
         <button class="biztone-close" title="닫기">×</button>
@@ -1018,10 +1086,10 @@
       </div>
     `;
 
-    document.documentElement.appendChild(bubbleElement);
+    document.documentElement.appendChild(state.bubbleElement);
 
     // Setup close button
-    const closeButton = bubbleElement.querySelector(".biztone-close");
+    const closeButton = state.bubbleElement.querySelector(".biztone-close");
     closeButton.addEventListener("click", removeBubble);
 
     // Position bubble
@@ -1033,14 +1101,14 @@
       left = Math.max(CONFIG.UI.MIN_POSITION, window.scrollX + selectionInfo.rect.left);
     }
     
-    bubbleElement.style.top = `${top}px`;
-    bubbleElement.style.left = `${left}px`;
+    state.bubbleElement.style.top = `${top}px`;
+    state.bubbleElement.style.left = `${left}px`;
 
     // Set loading state
     if (isLoading) {
-      bubbleElement.classList.add("biztone-loading");
+      state.bubbleElement.classList.add("biztone-loading");
     } else {
-      bubbleElement.classList.remove("biztone-loading");
+      state.bubbleElement.classList.remove("biztone-loading");
     }
   }
 
@@ -1069,8 +1137,8 @@
     showBubble(html, false);
 
     // Setup action buttons
-    const copyButton = bubbleElement.querySelector("#biztone-copy");
-    const replaceButton = bubbleElement.querySelector("#biztone-replace");
+    const copyButton = state.bubbleElement.querySelector("#biztone-copy");
+    const replaceButton = state.bubbleElement.querySelector("#biztone-replace");
 
     copyButton.addEventListener("click", async () => {
       try {
@@ -1086,9 +1154,9 @@
       let replaced = false;
 
       // Try input/textarea replacement
-      if (lastActiveElement && lastInputSelection && (lastActiveElement === document.activeElement)) {
-        const element = lastActiveElement;
-        const { start, end, value } = lastInputSelection;
+      if (state.lastActiveElement && state.lastInputSelection && (state.lastActiveElement === document.activeElement)) {
+        const element = state.lastActiveElement;
+        const { start, end, value } = state.lastInputSelection;
         
         if (typeof start === "number" && typeof end === "number") {
           element.value = value.slice(0, start) + text + value.slice(end);
@@ -1098,11 +1166,11 @@
       }
 
       // Try contentEditable replacement
-      if (!replaced && lastSelectionRange) {
+      if (!replaced && state.lastSelectionRange) {
         try {
-          lastSelectionRange.deleteContents();
+          state.lastSelectionRange.deleteContents();
           const textNode = document.createTextNode(text);
-          lastSelectionRange.insertNode(textNode);
+          state.lastSelectionRange.insertNode(textNode);
           replaced = true;
         } catch (error) {
           // Replacement failed
@@ -1148,7 +1216,7 @@
     
     showBubble(html, false);
     
-    const optionsButton = bubbleElement.querySelector("#biztone-open-options");
+    const optionsButton = state.bubbleElement.querySelector("#biztone-open-options");
     optionsButton.addEventListener("click", () => {
       safeSendMessage({ type: MESSAGE_TYPES.OPEN_OPTIONS });
     });
@@ -1189,14 +1257,14 @@
     showBubble(html, false);
 
     // Setup action buttons
-    const useOriginalButton = bubbleElement.querySelector("#biztone-use-original");
-    const useConvertedButton = bubbleElement.querySelector("#biztone-use-converted");
-    const copyButton = bubbleElement.querySelector("#biztone-copy-converted");
+    const useOriginalButton = state.bubbleElement.querySelector("#biztone-use-original");
+    const useConvertedButton = state.bubbleElement.querySelector("#biztone-use-converted");
+    const copyButton = state.bubbleElement.querySelector("#biztone-copy-converted");
 
     useOriginalButton.addEventListener("click", () => {
       removeBubble();
       // Cache as warning acknowledged to allow original send - will be cleared after one use
-      setCachedResult(originalText, { mode: "warning_acknowledged", originalText: originalText }, lastActiveElement);
+      setCachedResult(originalText, { mode: "warning_acknowledged", originalText: originalText }, state.lastActiveElement);
       showToast("다음 Enter 키로 원문 전송됩니다");
     });
 
@@ -1261,20 +1329,20 @@
     showBubble(html, false);
 
     // Setup action buttons
-    const sendButton = bubbleElement.querySelector("#biztone-send-anyway");
-    const editButton = bubbleElement.querySelector("#biztone-edit-text");
-    const convertButton = bubbleElement.querySelector("#biztone-convert-option");
+    const sendButton = state.bubbleElement.querySelector("#biztone-send-anyway");
+    const editButton = state.bubbleElement.querySelector("#biztone-edit-text");
+    const convertButton = state.bubbleElement.querySelector("#biztone-convert-option");
 
     sendButton.addEventListener("click", () => {
       removeBubble();
-      __BIZTONE_WARNING_SHOWN = true; // Mark warning as acknowledged
+      state.warningShown = true; // Mark warning as acknowledged
       // Cleanup form prevention when user chooses to send anyway
-      if (__BIZTONE_FORM_CLEANUP) {
-        __BIZTONE_FORM_CLEANUP();
-        __BIZTONE_FORM_CLEANUP = null;
+      if (state.formCleanup) {
+        state.formCleanup();
+        state.formCleanup = null;
       }
       // Cache acknowledgment for ONE use only - will be cleared after use
-      setCachedResult(text, { mode: "warning_acknowledged", originalText: text }, lastActiveElement);
+      setCachedResult(text, { mode: "warning_acknowledged", originalText: text }, state.state.lastActiveElement);
       showToast("다음 Enter 키로 원본 전송됩니다");
     });
 
@@ -1303,9 +1371,9 @@
         text: text
       }, (response) => {
         // Cleanup form prevention when conversion is done
-        if (__BIZTONE_FORM_CLEANUP) {
-          __BIZTONE_FORM_CLEANUP();
-          __BIZTONE_FORM_CLEANUP = null;
+        if (state.formCleanup) {
+          state.formCleanup();
+          state.formCleanup = null;
         }
         
         if (response && response.ok && response.result) {
@@ -1330,10 +1398,10 @@
    */
   function showRealtimeBadge(element, riskScore, riskFactors) {
     // Cancel any pending removal timer
-    const existingTimer = __BIZTONE_BADGE_TIMERS.get(element);
+    const existingTimer = state.badgeTimers.get(element);
     if (existingTimer) {
       clearTimeout(existingTimer);
-      __BIZTONE_BADGE_TIMERS.delete(element);
+      state.badgeTimers.delete(element);
     }
     
     // Remove existing badge for this element (immediate)
@@ -1465,7 +1533,7 @@
     
     // Add to DOM and track
     document.documentElement.appendChild(badge);
-    __BIZTONE_REALTIME_BADGES.set(element, badge);
+    state.realtimeBadges.set(element, badge);
     
     // Auto-remove after 10 seconds (increased for better UX)
     setTimeout(() => {
@@ -1481,30 +1549,30 @@
    */
   function removeRealtimeBadge(element, immediate = false) {
     // Clear any existing timer
-    const existingTimer = __BIZTONE_BADGE_TIMERS.get(element);
+    const existingTimer = state.badgeTimers.get(element);
     if (existingTimer) {
       clearTimeout(existingTimer);
-      __BIZTONE_BADGE_TIMERS.delete(element);
+      state.badgeTimers.delete(element);
     }
     
     if (immediate) {
-      const badge = __BIZTONE_REALTIME_BADGES.get(element);
+      const badge = state.realtimeBadges.get(element);
       if (badge && badge.parentNode) {
         badge.parentNode.removeChild(badge);
       }
-      __BIZTONE_REALTIME_BADGES.delete(element);
+      state.realtimeBadges.delete(element);
     } else {
       // Delayed removal to prevent flickering during fast typing
       const timer = setTimeout(() => {
-        const badge = __BIZTONE_REALTIME_BADGES.get(element);
+        const badge = state.realtimeBadges.get(element);
         if (badge && badge.parentNode) {
           badge.parentNode.removeChild(badge);
         }
-        __BIZTONE_REALTIME_BADGES.delete(element);
-        __BIZTONE_BADGE_TIMERS.delete(element);
+        state.realtimeBadges.delete(element);
+        state.badgeTimers.delete(element);
       }, 1000); // 1 second delay to prevent flickering
       
-      __BIZTONE_BADGE_TIMERS.set(element, timer);
+      state.badgeTimers.set(element, timer);
     }
   }
 
@@ -1524,7 +1592,7 @@
     
     // Performance optimization: Skip very long texts in real-time
     if (normalizedText.length > 500) {
-      console.debug("[BizTone] Skipping real-time check for long text (performance)");
+      // Skipping real-time check for long text
       return;
     }
     
@@ -1557,8 +1625,8 @@
     const now = Date.now();
     
     // Clear previous debounce
-    if (__BIZTONE_REALTIME_DEBOUNCE) {
-      clearTimeout(__BIZTONE_REALTIME_DEBOUNCE);
+    if (state.realtimeDebounce) {
+      clearTimeout(state.realtimeDebounce);
     }
     
     // Adaptive debounce timing based on various factors
@@ -1571,15 +1639,15 @@
     
     
     // Set new debounce timer
-    __BIZTONE_REALTIME_DEBOUNCE = setTimeout(() => {
+    state.realtimeDebounce = setTimeout(() => {
       const startTime = performance.now();
       handleRealtimeDetection(element, text);
       const endTime = performance.now();
       
-      console.debug(`[BizTone] Detection completed in ${(endTime - startTime).toFixed(2)}ms`);
+      // Detection completed
       
-      __BIZTONE_REALTIME_DEBOUNCE = null;
-      __BIZTONE_LAST_DETECTION_TIME = Date.now();
+      state.realtimeDebounce = null;
+      state.lastDetectionTime = Date.now();
     }, debounceMs);
   }
 
@@ -1591,7 +1659,7 @@
    */
   function getAdaptiveDebounceTime(text, now) {
     const textLength = text.length;
-    const timeSinceLastDetection = now - __BIZTONE_LAST_DETECTION_TIME;
+    const timeSinceLastDetection = now - state.lastDetectionTime;
     
     // Base timing: shorter for shorter text
     let baseTime = Math.min(400, Math.max(150, textLength * 20));
@@ -1644,14 +1712,14 @@
    */
   function setupRealtimeMonitoring(element) {
     // Skip if already monitoring
-    if (__BIZTONE_MONITORED_INPUTS.has(element)) {
+    if (state.monitoredInputs.has(element)) {
       return;
     }
     
-    console.debug("[BizTone] Setting up real-time monitoring for element:", element.tagName);
+    // Setting up real-time monitoring
     
     // Add to monitored set
-    __BIZTONE_MONITORED_INPUTS.add(element);
+    state.monitoredInputs.add(element);
     
     // Enhanced input event listener with instant detection
     const inputHandler = () => {
@@ -1659,7 +1727,7 @@
       
       // Instant detection for obvious profanity (no debounce)
       if (hasHighConfidenceProfanity(text)) {
-        console.debug("[BizTone] Instant detection triggered for:", text.substring(0, 10) + "...");
+        // Instant detection triggered
         handleRealtimeDetection(element, text);
         return;
       }
@@ -1686,7 +1754,7 @@
       element.removeEventListener('paste', inputHandler);
       element.removeEventListener('blur', blurHandler);
       removeRealtimeBadge(element);
-      __BIZTONE_MONITORED_INPUTS.delete(element);
+      state.monitoredInputs.delete(element);
       delete element.__BIZTONE_CLEANUP__;
     };
   }
@@ -1712,7 +1780,7 @@
       setupRealtimeMonitoring(element);
     });
     
-    console.debug("[BizTone] Auto-setup real-time monitoring for", textInputs.length, "elements");
+    // Auto-setup real-time monitoring completed
   }
 
   // ==================== GUARD SYSTEM ====================
@@ -1724,10 +1792,9 @@
    * @param {number} startTime - Performance timestamp
    * @param {Object} quickAssessment - Basic assessment for comparison
    */
-  async function processGuardResult(finalRisk, guardModePromise, startTime, quickAssessment) {
-    // Get guard mode and calculate timing
+  async function processGuardResult(finalRisk, guardModePromise) {
+    // Get guard mode
     const guardMode = await guardModePromise;
-    const processingTime = performance.now() - startTime;
     
     
     // Re-evaluate with final assessment
@@ -1742,9 +1809,9 @@
 
     // 1) Low risk after advanced assessment: allow send
     if (finalKind === "pass") {
-      if (__BIZTONE_FORM_CLEANUP) {
-        __BIZTONE_FORM_CLEANUP();
-        __BIZTONE_FORM_CLEANUP = null;
+      if (state.formCleanup) {
+        state.formCleanup();
+        state.formCleanup = null;
       }
       // Only cache in convert mode to allow repeated detection in warning mode
       if (guardMode !== "warn") {
@@ -1767,9 +1834,9 @@
           type: MESSAGE_TYPES.BIZTONE_CONVERT_TEXT,
           text: normalizedText
         }, (convertResponse) => {
-          if (__BIZTONE_FORM_CLEANUP) {
-            __BIZTONE_FORM_CLEANUP();
-            __BIZTONE_FORM_CLEANUP = null;
+          if (state.formCleanup) {
+            state.formCleanup();
+            state.formCleanup = null;
           }
           
           if (!convertResponse || !convertResponse.ok || !convertResponse.result) {
@@ -1807,9 +1874,9 @@
         type: MESSAGE_TYPES.BIZTONE_GUARD_DECIDE,
         text: normalizedText
       }, (decisionResponse) => {
-        if (__BIZTONE_FORM_CLEANUP) {
-          __BIZTONE_FORM_CLEANUP();
-          __BIZTONE_FORM_CLEANUP = null;
+        if (state.formCleanup) {
+          state.formCleanup();
+          state.formCleanup = null;
         }
         
         if (!decisionResponse || !decisionResponse.ok) {
@@ -1857,7 +1924,7 @@
     const isCmdEnter = isEnterKey(event) && (event.metaKey || event.ctrlKey);
     if (!isEnter && !isCmdEnter) return;
     
-    console.debug("[BizTone] Enter key detected:", { isEnter, isCmdEnter, key: event.key, code: event.code });
+    // Enter key detected
 
     // Prevent duplicate processing
     if (shouldSkipDuplicate()) return;
@@ -1865,25 +1932,25 @@
     try {
       // Check if guard is enabled
       if (!CONFIG.GUARD.ENABLED) {
-        console.debug("[BizTone] Guard disabled in config");
+        // Guard disabled in config
         return;
       }
       
       // Check domain-based guard rules
       if (await shouldDisableGuardForDomain()) {
-        console.debug("[BizTone] Guard disabled for current domain");
+        // Guard disabled for current domain
         return;
       }
       
       // If extension context is invalid, disable guard and allow normal operation
       if (!isExtensionContextValid()) {
-        console.debug("[BizTone] Extension context invalid - guard disabled");
+        // Extension context invalid - guard disabled
         return; // Allow normal send behavior
       }
 
       // Get current text context
       const textContext = getCurrentTextContext();
-      lastActiveElement = textContext.element || document.activeElement;
+      state.lastActiveElement = textContext.element || document.activeElement;
       const normalizedText = normalizeText(textContext.text);
       const isSearch = isSearchElement(textContext.element || document.activeElement);
       
@@ -1894,7 +1961,7 @@
       
       // For search elements, prevent form submission during processing
       if (isSearch) {
-        __BIZTONE_FORM_CLEANUP = preventSearchFormSubmission(textContext.element || document.activeElement);
+        state.formCleanup = preventSearchFormSubmission(textContext.element || document.activeElement);
       }
       
       // Test basic profanity detection
@@ -1939,9 +2006,9 @@
 
       // If safe, allow immediate send without blocking
       if (quickKind === "pass") {
-        if (__BIZTONE_FORM_CLEANUP) {
-          __BIZTONE_FORM_CLEANUP();
-          __BIZTONE_FORM_CLEANUP = null;
+        if (state.formCleanup) {
+          state.formCleanup();
+          state.formCleanup = null;
         }
         // Only cache in convert mode to allow repeated detection in warning mode
         if (currentGuardMode !== "warn") {
@@ -1956,7 +2023,6 @@
 
       // Start both guard mode retrieval and advanced risk assessment in parallel for speed
       const guardModePromise = getGuardMode();
-      const startTime = performance.now();
       
       // Add timeout for advanced risk assessment to prevent hanging
       let responseReceived = false;
@@ -1964,7 +2030,7 @@
       
       setTimeout(() => {
         if (!responseReceived) {
-          processGuardResult(quickAssessment, guardModePromise, startTime, quickAssessment);
+          processGuardResult(quickAssessment, guardModePromise);
         }
       }, timeoutMs);
       
@@ -1983,14 +2049,14 @@
           finalRisk = quickAssessment;
         }
         
-        processGuardResult(finalRisk, guardModePromise, startTime, quickAssessment);
+        processGuardResult(finalRisk, guardModePromise);
       });
 
     } catch (error) {
       console.error("[BizTone] Guard system error:", error);
-      if (__BIZTONE_FORM_CLEANUP) {
-        __BIZTONE_FORM_CLEANUP();
-        __BIZTONE_FORM_CLEANUP = null;
+      if (state.formCleanup) {
+        state.formCleanup();
+        state.formCleanup = null;
       }
       clearPendingGuard();
     }
@@ -2007,24 +2073,24 @@
   }, true);
 
   document.addEventListener("scroll", () => {
-    if (bubbleElement) removeBubble();
+    if (state.bubbleElement) removeBubble();
   }, true);
 
   document.addEventListener("click", (event) => {
-    if (bubbleElement && !bubbleElement.contains(event.target)) {
+    if (state.bubbleElement && !state.bubbleElement.contains(event.target)) {
       removeBubble();
     }
   }, true);
 
   // Message handler with extension context validation
   if (isExtensionContextValid()) {
-    console.log(`📟 Message listener installed in ${window.self === window.top ? 'TOP-FRAME' : 'IFRAME'}`);
+    // Message listener installed
     
     chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
       if (!message?.type) return;
       
       // Log all incoming messages for debugging
-      console.log(`📬 Incoming message: ${message.type} in ${window.self === window.top ? 'TOP-FRAME' : 'IFRAME'}`);
+      // Incoming message received
 
       switch (message.type) {
         case MESSAGE_TYPES.BIZTONE_PING:
@@ -2042,32 +2108,31 @@
         case MESSAGE_TYPES.BIZTONE_REPLACE_WITH:
           // Prevent duplicate message processing
           const now = Date.now();
-          const frameInfo = window.self === window.top ? 'TOP-FRAME' : 'IFRAME';
+          // Frame info available if needed
           
           // Log debug info from background script
           if (message.__debug_info) {
-            console.log(`📨 Background Debug Info:`, message.__debug_info);
-            console.log(`🕰️ Message travel time: ${now - message.__debug_info.timestamp}ms`);
+            // Background debug info available
           }
           
-          console.log(`🎯 REPLACE_WITH message received in ${frameInfo} at ${now} (text: "${message.text?.slice(0, 30)}...")`);
+          // REPLACE_WITH message received
           
-          if (__BIZTONE_LAST_MESSAGE_TYPE === message.type && now - __BIZTONE_LAST_MESSAGE_TS < 500) {
-            console.warn(`❌ DUPLICATE REPLACE_WITH message ignored in ${frameInfo}! Gap: ${now - __BIZTONE_LAST_MESSAGE_TS}ms`);
+          if (state.lastMessageType === message.type && now - state.lastMessageTimestamp < 500) {
+            // Duplicate message ignored
             return;
           }
-          __BIZTONE_LAST_MESSAGE_TS = now;
-          __BIZTONE_LAST_MESSAGE_TYPE = message.type;
-          console.log(`✅ Processing REPLACE_WITH message in ${frameInfo} (gap: ${__BIZTONE_LAST_MESSAGE_TS ? now - __BIZTONE_LAST_MESSAGE_TS : 'first'}ms)`);
+          state.lastMessageTimestamp = now;
+          state.lastMessageType = message.type;
+          // Processing REPLACE_WITH message
           
           // Direct replacement from keyboard shortcut - no UI needed
           const activeElement = document.activeElement;
-          lastActiveElement = activeElement || null;
+          state.lastActiveElement = activeElement || null;
           
           if (activeElement && 
               (activeElement.tagName === "TEXTAREA" || 
                (activeElement.tagName === "INPUT" && activeElement.type === "text"))) {
-            lastInputSelection = {
+            state.lastInputSelection = {
               start: activeElement.selectionStart,
               end: activeElement.selectionEnd,
               value: activeElement.value
@@ -2076,22 +2141,22 @@
             const selection = window.getSelection && window.getSelection();
             if (selection && selection.rangeCount) {
               try {
-                lastSelectionRange = selection.getRangeAt(0).cloneRange();
+                state.lastSelectionRange = selection.getRangeAt(0).cloneRange();
               } catch (error) {
                 // Selection cloning failed
               }
             }
           }
           
-          console.log(`🔧 Attempting to replace selected text...`);
+          // Attempting to replace selected text
           const replaced = replaceSelectedText(message.text || "");
-          console.log(`🔧 Text replacement result: ${replaced ? 'SUCCESS' : 'FAILED'}`);
+          // Text replacement attempted
           if (replaced) {
             // Show brief success toast instead of bubble
-            console.log(`✅ Text successfully replaced, showing toast`);
+            // Text successfully replaced
             showToast("변환 완료");
           } else {
-            console.log(`❌ Text replacement failed, falling back to clipboard`);
+            // Text replacement failed, falling back to clipboard
             // Fallback to clipboard with proper focus handling
             try {
               // Ensure document is focused for clipboard access
@@ -2110,7 +2175,7 @@
               }
             } catch (error) {
               // Final fallback: show text in toast for manual copy
-              console.log(`❌ Clipboard access failed:`, error);
+              // Clipboard access failed
               showToast(`변환 결과: ${message.text}`);
             }
           }
@@ -2129,8 +2194,8 @@
    * Initialize the BizTone content script with hybrid detection system
    */
   async function initializeBizTone() {
-    const initFrameInfo = window.self === window.top ? 'TOP-FRAME' : `IFRAME(${window.location.href})`;
-    console.debug(`[BizTone ContentScript] Initializing hybrid guard system in ${initFrameInfo}`);
+    // Frame info available if needed
+    // Initializing hybrid guard system
     
     // Load profanity data first
     await loadProfanityData();
@@ -2174,7 +2239,7 @@
       });
       
       if (hasNewInputs) {
-        console.debug("[BizTone] New text inputs detected and monitored");
+        // New text inputs detected and monitored
       }
     });
     
@@ -2189,12 +2254,12 @@
     new MutationObserver(() => {
       if (location.href !== lastUrl) {
         lastUrl = location.href;
-        console.debug("[BizTone] URL changed, re-initializing real-time monitoring");
+        // URL changed, re-initializing real-time monitoring
         setTimeout(autoSetupRealtimeMonitoring, 1000);
       }
     }).observe(document, { subtree: true, childList: true });
     
-    console.debug(`[BizTone ContentScript] Hybrid detection system initialized in ${initFrameInfo}`);
+    // Hybrid detection system initialized
   }
 
   /**
