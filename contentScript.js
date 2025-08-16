@@ -88,6 +88,7 @@
   let __BIZTONE_PENDING = false;
   let __BIZTONE_LAST_TS = 0;
   let __BIZTONE_GUARD_MODE = "warn"; // Default mode: warn (recommended)
+  let __BIZTONE_GUARD_MODE_CACHED = false; // Cache flag for guard mode
   let __BIZTONE_WARNING_SHOWN = false;
   let __BIZTONE_FORM_CLEANUP = null; // Store form prevention cleanup function
   
@@ -258,9 +259,14 @@
   }
 
   /**
-   * Get current guard mode setting from background
+   * Get current guard mode setting from background (cached)
    */
   async function getGuardMode() {
+    // Return cached value if available
+    if (__BIZTONE_GUARD_MODE_CACHED) {
+      return __BIZTONE_GUARD_MODE;
+    }
+    
     try {
       const response = await chrome.runtime.sendMessage({
         type: MESSAGE_TYPES.BIZTONE_GET_GUARD_MODE
@@ -268,11 +274,13 @@
       
       if (response?.ok && response.result?.guardMode) {
         __BIZTONE_GUARD_MODE = response.result.guardMode;
-        console.debug(`[BizTone] Guard mode loaded: ${__BIZTONE_GUARD_MODE}`);
+        __BIZTONE_GUARD_MODE_CACHED = true;
+        console.debug(`[BizTone] Guard mode loaded and cached: ${__BIZTONE_GUARD_MODE}`);
       }
     } catch (error) {
       console.warn('[BizTone] Failed to get guard mode, using default:', error);
       __BIZTONE_GUARD_MODE = "warn"; // fallback to default
+      __BIZTONE_GUARD_MODE_CACHED = true; // Cache the default too
     }
     
     return __BIZTONE_GUARD_MODE;
@@ -1739,6 +1747,152 @@
   // ==================== GUARD SYSTEM ====================
 
   /**
+   * Processes guard result with optimized performance
+   * @param {Object} finalRisk - Risk assessment result
+   * @param {Promise} guardModePromise - Promise resolving to guard mode
+   * @param {number} startTime - Performance timestamp
+   * @param {Object} quickAssessment - Basic assessment for comparison
+   */
+  async function processGuardResult(finalRisk, guardModePromise, startTime, quickAssessment) {
+    // Get guard mode and calculate timing
+    const guardMode = await guardModePromise;
+    const processingTime = performance.now() - startTime;
+    
+    console.debug(`[BizTone] Guard processing time: ${processingTime.toFixed(1)}ms, Guard mode: ${guardMode}`);
+    if (finalRisk !== quickAssessment) {
+      console.debug("[BizTone] Advanced risk assessment completed in", processingTime.toFixed(1) + "ms:", finalRisk);
+    } else {
+      console.warn("[BizTone] Using basic assessment fallback after", processingTime.toFixed(1) + "ms");
+    }
+    
+    // Re-evaluate with final assessment
+    const finalKind = finalRisk.whitelisted ? "pass" :
+      finalRisk.score <= CONFIG.PREFILTER.PASS_MAX ? "pass" :
+      finalRisk.score >= CONFIG.PREFILTER.CONVERT_MIN ? "convert" : "prompt";
+
+    console.log(`🎯 [BizTone] Final decision:`, {
+      score: finalRisk.score,
+      whitelisted: finalRisk.whitelisted,
+      passMax: CONFIG.PREFILTER.PASS_MAX,
+      convertMin: CONFIG.PREFILTER.CONVERT_MIN,
+      finalKind: finalKind,
+      guardMode: guardMode,
+      processingTime: processingTime.toFixed(1) + "ms"
+    });
+
+    // Get current text context for operations
+    const textContext = getCurrentTextContext();
+    const normalizedText = normalizeText(textContext.text);
+
+    // 1) Low risk after advanced assessment: allow send
+    if (finalKind === "pass") {
+      console.log("✅ [BizTone] Allowing send (low risk)");
+      if (__BIZTONE_FORM_CLEANUP) {
+        __BIZTONE_FORM_CLEANUP();
+        __BIZTONE_FORM_CLEANUP = null;
+      }
+      setCachedResult(normalizedText, { mode: "send" }, textContext.element);
+      dispatchEnterKey();
+      return;
+    }
+    
+    // 2) High risk: handle based on guard mode
+    if (finalKind === "convert") {
+      console.log(`🔥 [BizTone] High risk detected (convert case)`, { guardMode });
+      if (guardMode === "warn") {
+        // Warning mode: Show warning bubble instead of auto-converting
+        console.log("⚠️ [BizTone] Showing warning bubble");
+        const riskMessage = finalRisk.score >= 4 ? "강한 표현이 감지되었습니다" : "위험한 표현이 감지되었습니다";
+        showWarningBubble(normalizedText, riskMessage, finalRisk.riskFactors || {});
+        return;
+      } else {
+        // Convert mode: Auto-convert (existing behavior)
+        console.log("🔄 [BizTone] Auto-converting text");
+        safeSendMessage({
+          type: MESSAGE_TYPES.BIZTONE_CONVERT_TEXT,
+          text: normalizedText
+        }, (convertResponse) => {
+          if (__BIZTONE_FORM_CLEANUP) {
+            __BIZTONE_FORM_CLEANUP();
+            __BIZTONE_FORM_CLEANUP = null;
+          }
+          
+          if (!convertResponse || !convertResponse.ok || !convertResponse.result) {
+            const errorMsg = "보내기 보호: 변환 실패 — 다시 시도하거나 문장을 완화해 주세요.";
+            showToast(errorMsg);
+            
+            if (CONFIG.GUARD.FAIL_OPEN_ON_CONVERT_ERROR) {
+              console.debug("[BizTone] Fail-open on conversion error enabled, allowing send");
+              dispatchEnterKey();
+            }
+            return;
+          }
+          
+          const selectedReplaced = (textContext.mode === "selection" && 
+                                   typeof replaceSelectedText === "function") ? 
+                                   replaceSelectedText(convertResponse.result) : false;
+          const replaced = selectedReplaced || replaceFullText(convertResponse.result);
+          
+          if (CONFIG.GUARD.AUTO_SEND_CONVERTED && replaced) {
+            dispatchEnterKey();
+          } else if (replaced) {
+            showToast("변환 완료 — Enter를 다시 누르면 전송됩니다.");
+          }
+        });
+      }
+      return;
+    }
+    
+    // 3) Medium risk: handle based on guard mode
+    console.log(`⚡ [BizTone] Medium risk detected (prompt case)`, { guardMode });
+    if (guardMode === "warn") {
+      // Warning mode: Show warning for medium risk too
+      console.log("⚠️ [BizTone] Showing warning bubble for medium risk");
+      showWarningBubble(normalizedText, "주의가 필요한 표현이 감지되었습니다", finalRisk.riskFactors || {});
+    } else {
+      // Convert mode: Use AI decision (existing behavior)
+      console.log("🤖 [BizTone] Using AI decision");
+      safeSendMessage({
+        type: MESSAGE_TYPES.BIZTONE_GUARD_DECIDE,
+        text: normalizedText
+      }, (decisionResponse) => {
+        if (__BIZTONE_FORM_CLEANUP) {
+          __BIZTONE_FORM_CLEANUP();
+          __BIZTONE_FORM_CLEANUP = null;
+        }
+        
+        if (!decisionResponse || !decisionResponse.ok) {
+          if (CONFIG.GUARD.FAIL_OPEN_ON_DECISION_ERROR) {
+            console.debug("[BizTone] Decision failure, fail-open policy allows send");
+            dispatchEnterKey();
+          } else {
+            showToast("보내기 보호: 판정 실패 — 다시 시도해 주세요.");
+          }
+          return;
+        }
+        
+        if (decisionResponse.action === "send") {
+          setCachedResult(normalizedText, { mode: "send" }, textContext.element);
+          dispatchEnterKey();
+          return;
+        }
+        
+        const convertedText = decisionResponse.converted_text || normalizedText;
+        const selectedReplaced = (textContext.mode === "selection" && 
+                                 typeof replaceSelectedText === "function") ? 
+                                 replaceSelectedText(convertedText) : false;
+        const replaced = selectedReplaced || replaceFullText(convertedText);
+        
+        if (CONFIG.GUARD.AUTO_SEND_CONVERTED && replaced) {
+          dispatchEnterKey();
+        } else if (replaced) {
+          showToast("변환 완료 — Enter를 다시 누르면 전송됩니다.");
+        }
+      });
+    }
+  }
+
+  /**
    * Main keydown guard handler with race condition prevention
    * @param {KeyboardEvent} event - Keyboard event
    */
@@ -1876,161 +2030,37 @@
       event.preventDefault();
       event.stopImmediatePropagation();
 
-      // Get guard mode setting first
-      const guardMode = await getGuardMode();
-      console.debug(`[BizTone] Guard mode: ${guardMode}`);
+      // Start both guard mode retrieval and advanced risk assessment in parallel for speed
+      const guardModePromise = getGuardMode();
+      const startTime = performance.now();
       
-      // Now get enhanced assessment from background for precision
+      // Add timeout for advanced risk assessment to prevent hanging
+      let responseReceived = false;
+      const timeoutMs = 3000; // 3 second timeout
+      
+      setTimeout(() => {
+        if (!responseReceived) {
+          console.warn(`[BizTone] Advanced risk assessment timed out after ${timeoutMs}ms, using basic assessment`);
+          processGuardResult(quickAssessment, guardModePromise, startTime, quickAssessment);
+        }
+      }, timeoutMs);
+      
+      // Get enhanced assessment from background for precision
       safeSendMessage({
         type: "BIZTONE_ADVANCED_RISK", 
         text: normalizedText
-      }, (response) => {
+      }, async (response) => {
+        if (responseReceived) return; // Ignore if timeout already handled
+        responseReceived = true;
+        // Process the response and determine final risk
         let finalRisk;
-        
-        // Use advanced assessment if available, otherwise fallback to quick assessment
         if (response && response.ok && response.result) {
           finalRisk = response.result;
-          console.debug("[BizTone] Advanced risk assessment:", finalRisk);
         } else {
-          console.warn("[BizTone] Advanced risk assessment failed, using basic assessment");
           finalRisk = quickAssessment;
         }
         
-        // Re-evaluate with advanced assessment (might upgrade PASS to CONVERT, etc.)
-        const finalKind = finalRisk.whitelisted ? "pass" :
-          finalRisk.score <= CONFIG.PREFILTER.PASS_MAX ? "pass" :
-          finalRisk.score >= CONFIG.PREFILTER.CONVERT_MIN ? "convert" : "prompt";
-
-        console.log(`🎯 [BizTone] Final decision:`, {
-          score: finalRisk.score,
-          whitelisted: finalRisk.whitelisted,
-          passMax: CONFIG.PREFILTER.PASS_MAX,
-          convertMin: CONFIG.PREFILTER.CONVERT_MIN,
-          finalKind: finalKind,
-          guardMode: guardMode
-        });
-
-        // 1) Low risk after advanced assessment: allow send
-        if (finalKind === "pass") {
-          console.log("✅ [BizTone] Allowing send (low risk)");
-          if (__BIZTONE_FORM_CLEANUP) {
-            __BIZTONE_FORM_CLEANUP();
-            __BIZTONE_FORM_CLEANUP = null;
-          }
-          setCachedResult(normalizedText, { mode: "send" }, textContext.element);
-          dispatchEnterKey();
-          return;
-        }
-        
-        // 2) High risk: handle based on guard mode
-        if (finalKind === "convert") {
-          console.log(`🔥 [BizTone] High risk detected (convert case)`, { guardMode });
-          if (guardMode === "warn") {
-            // Warning mode: Show warning bubble instead of auto-converting
-            console.log("⚠️ [BizTone] Showing warning bubble");
-            const riskMessage = finalRisk.score >= 4 ? "강한 표현이 감지되었습니다" : "위험한 표현이 감지되었습니다";
-            showWarningBubble(normalizedText, riskMessage, finalRisk.riskFactors || {});
-            // Don't cache warning_shown to allow repeated detection
-            console.debug("[BizTone] Warning shown - not caching to allow future detection");
-            return;
-          } else {
-            // Convert mode: Auto-convert (existing behavior)
-            console.log("🔄 [BizTone] Auto-converting text");
-            safeSendMessage({
-              type: MESSAGE_TYPES.BIZTONE_CONVERT_TEXT,
-              text: normalizedText
-            }, (convertResponse) => {
-              // Always cleanup form prevention when processing is done
-              if (__BIZTONE_FORM_CLEANUP) {
-                __BIZTONE_FORM_CLEANUP();
-                __BIZTONE_FORM_CLEANUP = null;
-              }
-              
-              if (!convertResponse || !convertResponse.ok || !convertResponse.result) {
-                const errorMsg = "보내기 보호: 변환 실패 — 다시 시도하거나 문장을 완화해 주세요.";
-                showToast(errorMsg);
-                
-                // Configurable fail-safe: don't auto-send on conversion failure by default
-                if (CONFIG.GUARD.FAIL_OPEN_ON_CONVERT_ERROR) {
-                  console.debug("[BizTone] Fail-open on conversion error enabled, allowing send");
-                  dispatchEnterKey();
-                }
-                return;
-              }
-              
-              // Don't cache convert results to allow repeated detection
-              console.debug("[BizTone] Conversion completed - not caching to allow future detection");
-              
-              const selectedReplaced = (textContext.mode === "selection" && 
-                                       typeof replaceSelectedText === "function") ? 
-                                       replaceSelectedText(convertResponse.result) : false;
-              const replaced = selectedReplaced || replaceFullText(convertResponse.result);
-              
-              if (CONFIG.GUARD.AUTO_SEND_CONVERTED && replaced) {
-                dispatchEnterKey();
-              } else if (replaced) {
-                showToast("변환 완료 — Enter를 다시 누르면 전송됩니다.");
-              }
-            });
-          }
-          return;
-        }
-        
-        // 3) Medium risk: handle based on guard mode
-        console.log(`⚡ [BizTone] Medium risk detected (prompt case)`, { guardMode });
-        if (guardMode === "warn") {
-          // Warning mode: Show warning for medium risk too
-          console.log("⚠️ [BizTone] Showing warning bubble for medium risk");
-          // Don't cleanup form prevention yet - user needs to make a choice
-          showWarningBubble(normalizedText, "주의가 필요한 표현이 감지되었습니다", finalRisk.riskFactors || {});
-          // Don't cache warning_shown to allow repeated detection in same input field
-          console.debug("[BizTone] Warning shown for medium risk - not caching to allow future detection");
-        } else {
-          // Convert mode: Use AI decision (existing behavior)
-          console.log("🤖 [BizTone] Using AI decision");
-          safeSendMessage({
-            type: MESSAGE_TYPES.BIZTONE_GUARD_DECIDE,
-            text: normalizedText
-          }, (decisionResponse) => {
-            // Always cleanup form prevention when processing is done
-            if (__BIZTONE_FORM_CLEANUP) {
-              __BIZTONE_FORM_CLEANUP();
-              __BIZTONE_FORM_CLEANUP = null;
-            }
-            
-            if (!decisionResponse || !decisionResponse.ok) {
-              // Configurable fail-safe for decision errors (default: allow send for UX)
-              if (CONFIG.GUARD.FAIL_OPEN_ON_DECISION_ERROR) {
-                console.debug("[BizTone] Decision failure, fail-open policy allows send");
-                dispatchEnterKey();
-              } else {
-                showToast("보내기 보호: 판정 실패 — 다시 시도해 주세요.");
-              }
-              return;
-            }
-            
-            if (decisionResponse.action === "send") {
-              setCachedResult(normalizedText, { mode: "send" }, textContext.element);
-              dispatchEnterKey();
-              return;
-            }
-            
-            const convertedText = decisionResponse.converted_text || normalizedText;
-            // Don't cache convert results to allow repeated detection
-            console.debug("[BizTone] AI conversion completed - not caching to allow future detection");
-            
-            const selectedReplaced = (textContext.mode === "selection" && 
-                                     typeof replaceSelectedText === "function") ? 
-                                     replaceSelectedText(convertedText) : false;
-            const replaced = selectedReplaced || replaceFullText(convertedText);
-            
-            if (CONFIG.GUARD.AUTO_SEND_CONVERTED && replaced) {
-              dispatchEnterKey();
-            } else if (replaced) {
-              showToast("변환 완료 — Enter를 다시 누르면 전송됩니다.");
-            }
-          });
-        }
+        processGuardResult(finalRisk, guardModePromise, startTime, quickAssessment);
       });
 
     } catch (error) {

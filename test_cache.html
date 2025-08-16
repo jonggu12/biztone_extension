@@ -1,0 +1,169 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>BizTone Cache Test - Element-Specific Detection</title>
+    <style>
+        body {
+            font-family: 'Noto Sans KR', Arial, sans-serif;
+            max-width: 800px;
+            margin: 40px auto;
+            padding: 20px;
+            line-height: 1.6;
+        }
+        .test-section {
+            margin: 30px 0;
+            padding: 20px;
+            border: 2px solid #e5e7eb;
+            border-radius: 12px;
+            background: #f9fafb;
+        }
+        .input-group {
+            margin: 15px 0;
+        }
+        .input-group label {
+            display: block;
+            font-weight: 600;
+            margin-bottom: 5px;
+            color: #374151;
+        }
+        textarea, input[type="text"] {
+            width: 100%;
+            padding: 12px;
+            border: 2px solid #d1d5db;
+            border-radius: 8px;
+            font-size: 14px;
+            min-height: 80px;
+            resize: vertical;
+        }
+        textarea:focus, input[type="text"]:focus {
+            outline: none;
+            border-color: #3b82f6;
+            box-shadow: 0 0 0 3px rgba(59, 130, 246, 0.1);
+        }
+        .test-instructions {
+            background: #dbeafe;
+            border: 1px solid #3b82f6;
+            padding: 16px;
+            border-radius: 8px;
+            margin-bottom: 20px;
+        }
+        .test-instructions h3 {
+            margin: 0 0 10px 0;
+            color: #1e40af;
+        }
+        .step {
+            margin: 8px 0;
+            padding-left: 20px;
+            position: relative;
+        }
+        .step::before {
+            content: "→";
+            position: absolute;
+            left: 0;
+            color: #3b82f6;
+            font-weight: bold;
+        }
+        .warning {
+            background: #fef3c7;
+            border: 1px solid #f59e0b;
+            padding: 12px;
+            border-radius: 6px;
+            margin: 15px 0;
+            font-size: 13px;
+        }
+    </style>
+</head>
+<body>
+    <h1>🧪 BizTone Element-Specific Cache Test</h1>
+    
+    <div class="test-instructions">
+        <h3>📝 테스트 시나리오: 같은 메시지창 재감지 문제 해결</h3>
+        <div class="step">각 입력창에 욕설을 입력하고 Enter를 눌러 감지 테스트</div>
+        <div class="step">텍스트를 지우고 같은 욕설을 다시 입력 후 Enter를 눌러 재감지 확인</div>
+        <div class="step">다른 입력창에서도 동일하게 테스트하여 독립적 감지 확인</div>
+        <div class="step">실시간 배지는 계속 작동하고, Enter 가드도 재감지되어야 함</div>
+    </div>
+
+    <div class="warning">
+        <strong>⚠️ 주의:</strong> 이 테스트는 BizTone 확장 프로그램이 활성화된 상태에서 진행해야 합니다. 
+        실제 욕설을 사용하여 감지 시스템을 테스트합니다.
+    </div>
+
+    <div class="test-section">
+        <h3>🎯 테스트 영역 1: 메신저 메시지창</h3>
+        <div class="input-group">
+            <label for="messenger1">Slack/Discord 스타일 메시지 입력창</label>
+            <textarea id="messenger1" placeholder="여기에 메시지를 입력하고 Enter를 눌러보세요...
+예시: '시발 이건 뭐야' → Enter → 감지 → 지우기 → 다시 입력 → Enter → 재감지 확인"></textarea>
+        </div>
+    </div>
+
+    <div class="test-section">
+        <h3>🎯 테스트 영역 2: 이메일 제목창</h3>
+        <div class="input-group">
+            <label for="email-subject">이메일 제목 입력창</label>
+            <input type="text" id="email-subject" placeholder="제목을 입력하고 Enter를 눌러보세요...">
+        </div>
+        <div class="input-group">
+            <label for="email-body">이메일 본문 입력창</label>
+            <textarea id="email-body" placeholder="본문을 입력하고 Enter를 눌러보세요..."></textarea>
+        </div>
+    </div>
+
+    <div class="test-section">
+        <h3>🎯 테스트 영역 3: 댓글창</h3>
+        <div class="input-group">
+            <label for="comment1">댓글 입력창 #1</label>
+            <textarea id="comment1" placeholder="댓글을 입력하고 Enter를 눌러보세요..."></textarea>
+        </div>
+        <div class="input-group">
+            <label for="comment2">댓글 입력창 #2</label>
+            <textarea id="comment2" placeholder="다른 댓글을 입력하고 Enter를 눌러보세요..."></textarea>
+        </div>
+    </div>
+
+    <div class="test-section">
+        <h3>📊 예상 동작</h3>
+        <div style="margin: 15px 0;">
+            <strong>✅ 정상 동작:</strong>
+            <ul>
+                <li>각 입력창마다 독립적인 캐시 유지</li>
+                <li>같은 입력창에서 지우고 다시 입력했을 때 재감지</li>
+                <li>실시간 배지는 타이핑 중 즉시 표시</li>
+                <li>Enter 가드는 매번 새로 판정</li>
+            </ul>
+        </div>
+        <div style="margin: 15px 0;">
+            <strong>❌ 이전 문제:</strong>
+            <ul>
+                <li>같은 입력창에서 지우고 다시 입력하면 감지 안됨</li>
+                <li>전역 캐시로 인한 교차 간섭</li>
+            </ul>
+        </div>
+    </div>
+
+    <script>
+        // 테스트 도우미: 각 입력창에 포커스 이벤트 추가
+        document.querySelectorAll('textarea, input[type="text"]').forEach(element => {
+            element.addEventListener('focus', () => {
+                console.log(`[Test] Focused on element: ${element.id || element.tagName}`);
+            });
+            
+            element.addEventListener('keydown', (e) => {
+                if (e.key === 'Enter') {
+                    console.log(`[Test] Enter pressed in: ${element.id || element.tagName}`);
+                    console.log(`[Test] Text content: "${element.value}"`);
+                }
+            });
+        });
+
+        // 페이지 로드 시 테스트 준비 확인
+        window.addEventListener('load', () => {
+            console.log('[Test] BizTone cache test page loaded');
+            console.log('[Test] Ready for element-specific cache testing');
+        });
+    </script>
+</body>
+</html>
