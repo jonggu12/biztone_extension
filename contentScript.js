@@ -102,8 +102,9 @@
   let __BIZTONE_LAST_DETECTION_TIME = 0; // For adaptive timing
   let __BIZTONE_BADGE_TIMERS = new Map(); // Track badge removal timers
 
-  // Initialize cache and regex
-  const guardCache = new Map();
+  // Initialize cache and regex - Use element-specific cache to prevent cross-element issues
+  const guardCache = new Map(); // Global cache for compatibility
+  const elementSpecificCache = new WeakMap(); // Element-specific cache
   const profanityRegex = new RegExp(
     RISK_VOCABULARY.PROFANITY.map(word => word.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")).join("|"), 
     "i"
@@ -603,14 +604,31 @@
   // ==================== CACHE MANAGEMENT ====================
 
   /**
-   * Retrieves cached result for text
+   * Retrieves cached result for text from element-specific cache
    * @param {string} text - Text to look up
+   * @param {HTMLElement} element - Input element (optional)
    * @returns {Object|null} Cached result or null
    */
-  function getCachedResult(text) {
+  function getCachedResult(text, element = null) {
     const key = normalizeText(text);
-    const item = guardCache.get(key);
     
+    // Try element-specific cache first if element provided
+    if (element && elementSpecificCache.has(element)) {
+      const elementCache = elementSpecificCache.get(element);
+      const item = elementCache.get(key);
+      
+      if (item) {
+        if (Date.now() - item.timestamp > CONFIG.CACHE.TTL_MS) {
+          elementCache.delete(key);
+          return null;
+        }
+        console.debug("[BizTone] Using element-specific cache for:", key);
+        return item;
+      }
+    }
+    
+    // Fallback to global cache
+    const item = guardCache.get(key);
     if (!item) return null;
     
     if (Date.now() - item.timestamp > CONFIG.CACHE.TTL_MS) {
@@ -622,15 +640,41 @@
   }
 
   /**
-   * Stores result in cache
+   * Stores result in element-specific cache
    * @param {string} text - Text key
    * @param {Object} result - Result to cache
+   * @param {HTMLElement} element - Input element (optional)
    */
-  function setCachedResult(text, result) {
-    guardCache.set(normalizeText(text), {
+  function setCachedResult(text, result, element = null) {
+    const key = normalizeText(text);
+    const cacheItem = {
       timestamp: Date.now(),
       ...result
-    });
+    };
+    
+    // Store in element-specific cache if element provided
+    if (element) {
+      if (!elementSpecificCache.has(element)) {
+        elementSpecificCache.set(element, new Map());
+      }
+      const elementCache = elementSpecificCache.get(element);
+      elementCache.set(key, cacheItem);
+      console.debug("[BizTone] Cached in element-specific cache:", key, result);
+    }
+    
+    // Also store in global cache for compatibility
+    guardCache.set(key, cacheItem);
+  }
+
+  /**
+   * Clears cache for specific element
+   * @param {HTMLElement} element - Input element
+   */
+  function clearElementCache(element) {
+    if (element && elementSpecificCache.has(element)) {
+      elementSpecificCache.delete(element);
+      console.debug("[BizTone] Cleared element-specific cache");
+    }
   }
 
   // ==================== TEXT EXTRACTION & MANIPULATION ====================
@@ -1164,7 +1208,7 @@
     useOriginalButton.addEventListener("click", () => {
       removeBubble();
       // Cache as warning acknowledged to allow original send - will be cleared after one use
-      setCachedResult(originalText, { mode: "warning_acknowledged", originalText: originalText });
+      setCachedResult(originalText, { mode: "warning_acknowledged", originalText: originalText }, lastActiveElement);
       showToast("다음 Enter 키로 원문 전송됩니다");
     });
 
@@ -1242,7 +1286,7 @@
         __BIZTONE_FORM_CLEANUP = null;
       }
       // Cache acknowledgment for ONE use only - will be cleared after use
-      setCachedResult(text, { mode: "warning_acknowledged", originalText: text });
+      setCachedResult(text, { mode: "warning_acknowledged", originalText: text }, lastActiveElement);
       showToast("다음 Enter 키로 원본 전송됩니다");
     });
 
@@ -1732,6 +1776,7 @@
 
       // Get current text context
       const textContext = getCurrentTextContext();
+      lastActiveElement = textContext.element || document.activeElement;
       const normalizedText = normalizeText(textContext.text);
       const isSearch = isSearchElement(textContext.element || document.activeElement);
       
@@ -1761,7 +1806,7 @@
       console.log(`📊 [BizTone] Quick risk assessment:`, quickRisk);
 
       // Check cache first - but allow re-detection for warning cases to enable repeated detection
-      const cachedResult = getCachedResult(normalizedText);
+      const cachedResult = getCachedResult(normalizedText, textContext.element);
       if (cachedResult) {
         event.preventDefault();
         event.stopImmediatePropagation();
@@ -1774,7 +1819,12 @@
         // Handle cached warning acknowledgment - only for single use, then clear cache
         if (cachedResult.mode === "warning_acknowledged") {
           // Clear this cache entry after one use to allow re-detection
-          guardCache.delete(normalizeText(normalizedText));
+          const key = normalizeText(normalizedText);
+          guardCache.delete(key);
+          if (textContext.element && elementSpecificCache.has(textContext.element)) {
+            const elementCache = elementSpecificCache.get(textContext.element);
+            elementCache.delete(key);
+          }
           dispatchEnterKey();
           return;
         }
@@ -1818,7 +1868,7 @@
           __BIZTONE_FORM_CLEANUP();
           __BIZTONE_FORM_CLEANUP = null;
         }
-        setCachedResult(normalizedText, { mode: "send" });
+        setCachedResult(normalizedText, { mode: "send" }, textContext.element);
         return; // Don't prevent default - allow normal send
       }
 
@@ -1867,7 +1917,7 @@
             __BIZTONE_FORM_CLEANUP();
             __BIZTONE_FORM_CLEANUP = null;
           }
-          setCachedResult(normalizedText, { mode: "send" });
+          setCachedResult(normalizedText, { mode: "send" }, textContext.element);
           dispatchEnterKey();
           return;
         }
@@ -1960,7 +2010,7 @@
             }
             
             if (decisionResponse.action === "send") {
-              setCachedResult(normalizedText, { mode: "send" });
+              setCachedResult(normalizedText, { mode: "send" }, textContext.element);
               dispatchEnterKey();
               return;
             }
