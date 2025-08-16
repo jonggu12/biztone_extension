@@ -51,6 +51,16 @@ const MESSAGE_TYPES = {
   BIZTONE_GUARD_WARNING: "BIZTONE_GUARD_WARNING",
   BIZTONE_GET_PROFANITY_DATA: "BIZTONE_GET_PROFANITY_DATA",
   
+  // Whitelist/Blacklist management
+  BIZTONE_GET_WHITELIST: "BIZTONE_GET_WHITELIST",
+  BIZTONE_SET_WHITELIST: "BIZTONE_SET_WHITELIST",
+  BIZTONE_ADD_WHITELIST_ITEM: "BIZTONE_ADD_WHITELIST_ITEM",
+  BIZTONE_REMOVE_WHITELIST_ITEM: "BIZTONE_REMOVE_WHITELIST_ITEM",
+  BIZTONE_GET_BLACKLIST: "BIZTONE_GET_BLACKLIST",
+  BIZTONE_SET_BLACKLIST: "BIZTONE_SET_BLACKLIST",
+  BIZTONE_ADD_BLACKLIST_ITEM: "BIZTONE_ADD_BLACKLIST_ITEM",
+  BIZTONE_REMOVE_BLACKLIST_ITEM: "BIZTONE_REMOVE_BLACKLIST_ITEM",
+  
   // Domain management
   BIZTONE_GET_DOMAIN_STATUS: "BIZTONE_GET_DOMAIN_STATUS",
   BIZTONE_TOGGLE_DOMAIN: "BIZTONE_TOGGLE_DOMAIN",
@@ -73,7 +83,36 @@ const ERROR_MESSAGES = {
   CONVERSION_FAILED: "변환에 실패했습니다. 다시 시도해 주세요.",
   RISK_ASSESSMENT_FAILED: "위험도 평가 실패",
   DECISION_FAILED: "결정 실패",
-  DOMAIN_OPERATION_FAILED: "도메인 작업 실패"
+  DOMAIN_OPERATION_FAILED: "도메인 작업 실패",
+  WHITELIST_OPERATION_FAILED: "화이트리스트 작업 실패",
+  BLACKLIST_OPERATION_FAILED: "블랙리스트 작업 실패"
+};
+
+/**
+ * Constants for whitelist/blacklist management
+ * @readonly
+ */
+const LIST_CONSTANTS = {
+  STORAGE_KEYS: {
+    WHITELIST: 'BIZTONE_WHITELIST',
+    BLACKLIST: 'BIZTONE_BLACKLIST'
+  },
+  MATCH_TYPES: {
+    EXACT: 'exact',
+    CONTAINS: 'contains', 
+    REGEX: 'regex'
+  },
+  LOCALES: {
+    KOREAN: 'ko',
+    ENGLISH: 'en',
+    ALL: 'all'
+  },
+  WEIGHTS: {
+    LOW: 1,
+    MEDIUM: 2,
+    HIGH: 3,
+    VERY_HIGH: 4
+  }
 };
 
 // ==================== STATE MANAGEMENT ====================
@@ -329,6 +368,332 @@ ${text}
 // Global API service instance
 const openAIService = new OpenAIService();
 
+// ==================== WHITELIST/BLACKLIST MANAGEMENT ====================
+
+/**
+ * Whitelist/Blacklist management service
+ */
+class ListManager {
+  constructor() {
+    this.whitelistCache = null;
+    this.blacklistCache = null;
+    this.cacheTimeout = 30000; // 30 seconds
+    this.lastWhitelistUpdate = 0;
+    this.lastBlacklistUpdate = 0;
+  }
+  
+  /**
+   * Validates list item structure
+   * @param {Object} item - List item to validate
+   * @param {boolean} isBlacklist - Whether this is for blacklist (needs weight)
+   * @returns {boolean} True if valid
+   */
+  validateListItem(item, isBlacklist = false) {
+    if (!item || typeof item !== 'object') return false;
+    if (!item.text || typeof item.text !== 'string') return false;
+    if (!Object.values(LIST_CONSTANTS.MATCH_TYPES).includes(item.match)) return false;
+    if (!Object.values(LIST_CONSTANTS.LOCALES).includes(item.locale)) return false;
+    
+    if (isBlacklist) {
+      if (!Object.values(LIST_CONSTANTS.WEIGHTS).includes(item.weight)) return false;
+    }
+    
+    return true;
+  }
+  
+  /**
+   * Creates a normalized list item
+   * @param {string} text - Text to match
+   * @param {string} match - Match type
+   * @param {string} locale - Locale
+   * @param {number} weight - Weight (blacklist only)
+   * @returns {Object} Normalized item
+   */
+  createListItem(text, match = LIST_CONSTANTS.MATCH_TYPES.CONTAINS, locale = LIST_CONSTANTS.LOCALES.ALL, weight = null) {
+    const item = {
+      text: text.trim(),
+      match,
+      locale,
+      createdAt: Date.now(),
+      id: this.generateId()
+    };
+    
+    if (weight !== null) {
+      item.weight = weight;
+    }
+    
+    return item;
+  }
+  
+  /**
+   * Generates unique ID for list items
+   * @returns {string} Unique ID
+   */
+  generateId() {
+    return Date.now().toString(36) + Math.random().toString(36).substr(2);
+  }
+  
+  /**
+   * Gets whitelist from storage with caching
+   * @returns {Promise<Array>} Whitelist items
+   */
+  async getWhitelist() {
+    const now = Date.now();
+    
+    if (this.whitelistCache && (now - this.lastWhitelistUpdate) < this.cacheTimeout) {
+      return this.whitelistCache;
+    }
+    
+    try {
+      const result = await chrome.storage.sync.get([LIST_CONSTANTS.STORAGE_KEYS.WHITELIST]);
+      const whitelist = result[LIST_CONSTANTS.STORAGE_KEYS.WHITELIST] || [];
+      
+      this.whitelistCache = whitelist;
+      this.lastWhitelistUpdate = now;
+      
+      return whitelist;
+    } catch (error) {
+      return [];
+    }
+  }
+  
+  /**
+   * Gets blacklist from storage with caching
+   * @returns {Promise<Array>} Blacklist items
+   */
+  async getBlacklist() {
+    const now = Date.now();
+    
+    if (this.blacklistCache && (now - this.lastBlacklistUpdate) < this.cacheTimeout) {
+      return this.blacklistCache;
+    }
+    
+    try {
+      const result = await chrome.storage.sync.get([LIST_CONSTANTS.STORAGE_KEYS.BLACKLIST]);
+      const blacklist = result[LIST_CONSTANTS.STORAGE_KEYS.BLACKLIST] || [];
+      
+      this.blacklistCache = blacklist;
+      this.lastBlacklistUpdate = now;
+      
+      return blacklist;
+    } catch (error) {
+      return [];
+    }
+  }
+  
+  /**
+   * Saves whitelist to storage
+   * @param {Array} whitelist - Whitelist items
+   * @returns {Promise<boolean>} Success status
+   */
+  async saveWhitelist(whitelist) {
+    try {
+      await chrome.storage.sync.set({ [LIST_CONSTANTS.STORAGE_KEYS.WHITELIST]: whitelist });
+      this.whitelistCache = whitelist;
+      this.lastWhitelistUpdate = Date.now();
+      return true;
+    } catch (error) {
+      return false;
+    }
+  }
+  
+  /**
+   * Saves blacklist to storage
+   * @param {Array} blacklist - Blacklist items
+   * @returns {Promise<boolean>} Success status
+   */
+  async saveBlacklist(blacklist) {
+    try {
+      await chrome.storage.sync.set({ [LIST_CONSTANTS.STORAGE_KEYS.BLACKLIST]: blacklist });
+      this.blacklistCache = blacklist;
+      this.lastBlacklistUpdate = Date.now();
+      return true;
+    } catch (error) {
+      return false;
+    }
+  }
+  
+  /**
+   * Adds item to whitelist
+   * @param {Object} item - Item to add
+   * @returns {Promise<boolean>} Success status
+   */
+  async addWhitelistItem(item) {
+    if (!this.validateListItem(item, false)) {
+      return false;
+    }
+    
+    const whitelist = await this.getWhitelist();
+    
+    // Check for duplicates
+    const isDuplicate = whitelist.some(existing => 
+      existing.text === item.text && existing.match === item.match && existing.locale === item.locale
+    );
+    
+    if (isDuplicate) {
+      return false;
+    }
+    
+    whitelist.push(item);
+    return await this.saveWhitelist(whitelist);
+  }
+  
+  /**
+   * Adds item to blacklist
+   * @param {Object} item - Item to add
+   * @returns {Promise<boolean>} Success status
+   */
+  async addBlacklistItem(item) {
+    if (!this.validateListItem(item, true)) {
+      return false;
+    }
+    
+    const blacklist = await this.getBlacklist();
+    
+    // Check for duplicates
+    const isDuplicate = blacklist.some(existing => 
+      existing.text === item.text && existing.match === item.match && existing.locale === item.locale
+    );
+    
+    if (isDuplicate) {
+      return false;
+    }
+    
+    blacklist.push(item);
+    return await this.saveBlacklist(blacklist);
+  }
+  
+  /**
+   * Removes item from whitelist by ID
+   * @param {string} itemId - Item ID to remove
+   * @returns {Promise<boolean>} Success status
+   */
+  async removeWhitelistItem(itemId) {
+    const whitelist = await this.getWhitelist();
+    const filteredList = whitelist.filter(item => item.id !== itemId);
+    
+    if (filteredList.length === whitelist.length) {
+      return false; // Item not found
+    }
+    
+    return await this.saveWhitelist(filteredList);
+  }
+  
+  /**
+   * Removes item from blacklist by ID
+   * @param {string} itemId - Item ID to remove
+   * @returns {Promise<boolean>} Success status
+   */
+  async removeBlacklistItem(itemId) {
+    const blacklist = await this.getBlacklist();
+    const filteredList = blacklist.filter(item => item.id !== itemId);
+    
+    if (filteredList.length === blacklist.length) {
+      return false; // Item not found
+    }
+    
+    return await this.saveBlacklist(filteredList);
+  }
+  
+  /**
+   * Checks if text matches whitelist
+   * @param {string} text - Text to check
+   * @param {string} locale - Text locale
+   * @returns {Promise<boolean>} True if whitelisted
+   */
+  async isTextWhitelisted(text, locale = LIST_CONSTANTS.LOCALES.ALL) {
+    const whitelist = await this.getWhitelist();
+    const normalizedText = TextUtils.normalizeText(text).toLowerCase();
+    
+    return whitelist.some(item => {
+      // Check locale match
+      if (item.locale !== LIST_CONSTANTS.LOCALES.ALL && item.locale !== locale) {
+        return false;
+      }
+      
+      const itemText = item.text.toLowerCase();
+      
+      switch (item.match) {
+        case LIST_CONSTANTS.MATCH_TYPES.EXACT:
+          return normalizedText === itemText;
+        case LIST_CONSTANTS.MATCH_TYPES.CONTAINS:
+          return normalizedText.includes(itemText) || itemText.includes(normalizedText);
+        case LIST_CONSTANTS.MATCH_TYPES.REGEX:
+          try {
+            const regex = new RegExp(item.text, 'i');
+            return regex.test(normalizedText);
+          } catch {
+            return false;
+          }
+        default:
+          return false;
+      }
+    });
+  }
+  
+  /**
+   * Gets blacklist matches and their weights
+   * @param {string} text - Text to check
+   * @param {string} locale - Text locale
+   * @returns {Promise<Array>} Array of matches with weights
+   */
+  async getBlacklistMatches(text, locale = LIST_CONSTANTS.LOCALES.ALL) {
+    const blacklist = await this.getBlacklist();
+    const normalizedText = TextUtils.normalizeText(text).toLowerCase();
+    const matches = [];
+    
+    blacklist.forEach(item => {
+      // Check locale match
+      if (item.locale !== LIST_CONSTANTS.LOCALES.ALL && item.locale !== locale) {
+        return;
+      }
+      
+      const itemText = item.text.toLowerCase();
+      let isMatch = false;
+      
+      switch (item.match) {
+        case LIST_CONSTANTS.MATCH_TYPES.EXACT:
+          isMatch = normalizedText === itemText;
+          break;
+        case LIST_CONSTANTS.MATCH_TYPES.CONTAINS:
+          isMatch = normalizedText.includes(itemText);
+          break;
+        case LIST_CONSTANTS.MATCH_TYPES.REGEX:
+          try {
+            const regex = new RegExp(item.text, 'i');
+            isMatch = regex.test(normalizedText);
+          } catch {
+            isMatch = false;
+          }
+          break;
+      }
+      
+      if (isMatch) {
+        matches.push({
+          item,
+          weight: item.weight,
+          matchedText: itemText
+        });
+      }
+    });
+    
+    return matches;
+  }
+  
+  /**
+   * Clears all caches
+   */
+  clearCache() {
+    this.whitelistCache = null;
+    this.blacklistCache = null;
+    this.lastWhitelistUpdate = 0;
+    this.lastBlacklistUpdate = 0;
+  }
+}
+
+// Global list manager instance
+const listManager = new ListManager();
+
 // ==================== DATA LOADING ====================
 
 /**
@@ -578,8 +943,8 @@ function generateNoisePattern(word) {
  */
 function getCategoryWeight(category) {
   const weights = {
-    strong: 3,
-    slur: 3,
+    strong: 4,
+    slur: 4,
     adult: 2,
     weak: 1
   };
@@ -593,7 +958,7 @@ function getCategoryWeight(category) {
 function classifyWordStrength(word) {
   const strongIndicators = ['씨발', '시발', '좆', '병신', '개새끼', '꺼져'];
   const isStrong = strongIndicators.some(indicator => 
-    normalizeKoreanText(word).includes(normalizeKoreanText(indicator))
+    TextUtils.normalizeKoreanText(word).includes(TextUtils.normalizeKoreanText(indicator))
   );
   return isStrong ? 'strong' : 'weak';
 }
@@ -602,15 +967,15 @@ function classifyWordStrength(word) {
  * Load and compile profanity patterns
  */
 async function loadAndCompilePatterns() {
-  if (compiledPatterns) {
-    return compiledPatterns;
+  if (state.compiledPatterns) {
+    return state.compiledPatterns;
   }
   
-  if (patternCompilationPromise) {
-    return patternCompilationPromise;
+  if (state.patternCompilationPromise) {
+    return state.patternCompilationPromise;
   }
   
-  patternCompilationPromise = (async () => {
+  state.patternCompilationPromise = (async () => {
     try {
       // Load categorized word list
       const categoriesUrl = chrome.runtime.getURL('data/fword_categories.json');
@@ -637,13 +1002,13 @@ async function loadAndCompilePatterns() {
       };
       
       
-      compiledPatterns = {
+      state.compiledPatterns = {
         ...categorizedPatterns,
         compiled: true,
         timestamp: Date.now()
       };
       
-      return compiledPatterns;
+      return state.compiledPatterns;
     } catch (error) {
       
       try {
@@ -661,7 +1026,7 @@ async function loadAndCompilePatterns() {
         const strongPatterns = fallbackPatterns.filter(p => p.strength === 'strong');
         const weakPatterns = fallbackPatterns.filter(p => p.strength === 'weak');
         
-        compiledPatterns = {
+        state.compiledPatterns = {
           strong: strongPatterns,
           weak: weakPatterns,
           adult: [],
@@ -673,7 +1038,7 @@ async function loadAndCompilePatterns() {
           timestamp: Date.now()
         };
         
-        return compiledPatterns;
+        return state.compiledPatterns;
       } catch (fallbackError) {
         // Last resort: hardcoded patterns
         const basicWords = [
@@ -687,7 +1052,7 @@ async function loadAndCompilePatterns() {
         
         const emergencyPatterns = basicWords.map(item => generateCategorizedPattern(item));
         
-        compiledPatterns = {
+        state.compiledPatterns = {
           strong: emergencyPatterns.filter(p => p.category === 'strong'),
           weak: emergencyPatterns.filter(p => p.category === 'weak'),
           adult: [],
@@ -699,7 +1064,7 @@ async function loadAndCompilePatterns() {
           timestamp: Date.now()
         };
         
-        return compiledPatterns;
+        return state.compiledPatterns;
       }
     }
   })();
@@ -730,7 +1095,7 @@ async function loadAndCompilePatterns() {
  * console.log(result.riskLevel); // 'LOW'
  */
 async function calculateAdvancedRiskScore(text) {
-  const normalized = normalizeKoreanText(text);
+  const normalized = TextUtils.normalizeKoreanText(text);
   const skeleton = extractKoreanSkeleton(normalized);
   
   if (!normalized) {
@@ -865,34 +1230,42 @@ async function saveWhitelist(whitelist) {
 }
 
 /**
- * Check if text is whitelisted
- */
-async function isTextWhitelisted(text) {
-  const whitelist = await loadWhitelist();
-  const normalized = normalizeKoreanText(text);
-  
-  return whitelist.some(whitelistItem => {
-    const normalizedItem = normalizeKoreanText(whitelistItem);
-    return normalized.includes(normalizedItem) || normalizedItem.includes(normalized);
-  });
-}
-
-/**
  * Enhanced risk assessment with whitelist check
  */
 async function calculateAdvancedRiskScoreWithWhitelist(text) {
   // Check whitelist first
-  if (await isTextWhitelisted(text)) {
+  const isWhitelisted = await listManager.isTextWhitelisted(text);
+  if (isWhitelisted) {
     return {
       score: 0,
       matches: [],
       contextual: { score: 0, factors: [] },
+      riskLevel: 'LOW',
+      categoryStats: { strong: 0, weak: 0, adult: 0, slur: 0 },
       whitelisted: true
     };
   }
   
-  // Proceed with normal risk assessment
+  // Proceed with normal risk assessment and add blacklist matches
   const result = await calculateAdvancedRiskScore(text);
+  
+  // Add blacklist risk factors
+  const blacklistMatches = await listManager.getBlacklistMatches(text);
+  
+  if (blacklistMatches.length > 0) {
+    const blacklistScore = blacklistMatches.reduce((total, match) => total + match.weight, 0);
+    result.score = Math.min(result.score + blacklistScore, 10);
+    
+    // Add blacklist matches to the result
+    result.blacklistMatches = blacklistMatches;
+    result.blacklistScore = blacklistScore;
+    
+    // Recalculate risk level with new score
+    if (result.score >= 4) result.riskLevel = 'HIGH';
+    else if (result.score >= 2) result.riskLevel = 'MEDIUM';
+    else result.riskLevel = 'LOW';
+  }
+  
   return { ...result, whitelisted: false };
 }
 
@@ -1441,6 +1814,39 @@ chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
         sendResponse({ ok: true });
         break;
 
+      // Whitelist/Blacklist management
+      case MESSAGE_TYPES.BIZTONE_GET_WHITELIST:
+        await handleGetWhitelist(sendResponse);
+        break;
+        
+      case MESSAGE_TYPES.BIZTONE_SET_WHITELIST:
+        await handleSetWhitelist(message.whitelist, sendResponse);
+        break;
+        
+      case MESSAGE_TYPES.BIZTONE_ADD_WHITELIST_ITEM:
+        await handleAddWhitelistItem(message.item, sendResponse);
+        break;
+        
+      case MESSAGE_TYPES.BIZTONE_REMOVE_WHITELIST_ITEM:
+        await handleRemoveWhitelistItem(message.itemId, sendResponse);
+        break;
+        
+      case MESSAGE_TYPES.BIZTONE_GET_BLACKLIST:
+        await handleGetBlacklist(sendResponse);
+        break;
+        
+      case MESSAGE_TYPES.BIZTONE_SET_BLACKLIST:
+        await handleSetBlacklist(message.blacklist, sendResponse);
+        break;
+        
+      case MESSAGE_TYPES.BIZTONE_ADD_BLACKLIST_ITEM:
+        await handleAddBlacklistItem(message.item, sendResponse);
+        break;
+        
+      case MESSAGE_TYPES.BIZTONE_REMOVE_BLACKLIST_ITEM:
+        await handleRemoveBlacklistItem(message.itemId, sendResponse);
+        break;
+
       default:
         // Unknown message type
     }
@@ -1640,6 +2046,156 @@ async function handleRemoveDomainRule(message, sendResponse) {
     }
   } catch (error) {
     sendResponse(createErrorResponse('Failed to remove domain rule'));
+  }
+}
+
+// ==================== WHITELIST/BLACKLIST HANDLERS ====================
+
+/**
+ * Handle get whitelist message
+ */
+async function handleGetWhitelist(sendResponse) {
+  try {
+    const whitelist = await listManager.getWhitelist();
+    sendResponse(createSuccessResponse({ whitelist }));
+  } catch (error) {
+    sendResponse(createErrorResponse(ERROR_MESSAGES.WHITELIST_OPERATION_FAILED));
+  }
+}
+
+/**
+ * Handle set whitelist message
+ */
+async function handleSetWhitelist(whitelist, sendResponse) {
+  try {
+    if (!Array.isArray(whitelist)) {
+      return sendResponse(createErrorResponse('Invalid whitelist format'));
+    }
+    
+    const success = await listManager.saveWhitelist(whitelist);
+    if (success) {
+      sendResponse(createSuccessResponse({ whitelist }));
+    } else {
+      sendResponse(createErrorResponse('Failed to save whitelist'));
+    }
+  } catch (error) {
+    sendResponse(createErrorResponse(ERROR_MESSAGES.WHITELIST_OPERATION_FAILED));
+  }
+}
+
+/**
+ * Handle add whitelist item message
+ */
+async function handleAddWhitelistItem(item, sendResponse) {
+  try {
+    if (!item) {
+      return sendResponse(createErrorResponse('Item not provided'));
+    }
+    
+    const success = await listManager.addWhitelistItem(item);
+    if (success) {
+      const whitelist = await listManager.getWhitelist();
+      sendResponse(createSuccessResponse({ whitelist, added: true }));
+    } else {
+      sendResponse(createErrorResponse('Failed to add whitelist item (validation failed or duplicate)'));
+    }
+  } catch (error) {
+    sendResponse(createErrorResponse(ERROR_MESSAGES.WHITELIST_OPERATION_FAILED));
+  }
+}
+
+/**
+ * Handle remove whitelist item message
+ */
+async function handleRemoveWhitelistItem(itemId, sendResponse) {
+  try {
+    if (!itemId) {
+      return sendResponse(createErrorResponse('Item ID not provided'));
+    }
+    
+    const success = await listManager.removeWhitelistItem(itemId);
+    if (success) {
+      const whitelist = await listManager.getWhitelist();
+      sendResponse(createSuccessResponse({ whitelist, removed: true }));
+    } else {
+      sendResponse(createErrorResponse('Failed to remove whitelist item (not found)'));
+    }
+  } catch (error) {
+    sendResponse(createErrorResponse(ERROR_MESSAGES.WHITELIST_OPERATION_FAILED));
+  }
+}
+
+/**
+ * Handle get blacklist message
+ */
+async function handleGetBlacklist(sendResponse) {
+  try {
+    const blacklist = await listManager.getBlacklist();
+    sendResponse(createSuccessResponse({ blacklist }));
+  } catch (error) {
+    sendResponse(createErrorResponse(ERROR_MESSAGES.BLACKLIST_OPERATION_FAILED));
+  }
+}
+
+/**
+ * Handle set blacklist message
+ */
+async function handleSetBlacklist(blacklist, sendResponse) {
+  try {
+    if (!Array.isArray(blacklist)) {
+      return sendResponse(createErrorResponse('Invalid blacklist format'));
+    }
+    
+    const success = await listManager.saveBlacklist(blacklist);
+    if (success) {
+      sendResponse(createSuccessResponse({ blacklist }));
+    } else {
+      sendResponse(createErrorResponse('Failed to save blacklist'));
+    }
+  } catch (error) {
+    sendResponse(createErrorResponse(ERROR_MESSAGES.BLACKLIST_OPERATION_FAILED));
+  }
+}
+
+/**
+ * Handle add blacklist item message
+ */
+async function handleAddBlacklistItem(item, sendResponse) {
+  try {
+    if (!item) {
+      return sendResponse(createErrorResponse('Item not provided'));
+    }
+    
+    const success = await listManager.addBlacklistItem(item);
+    if (success) {
+      const blacklist = await listManager.getBlacklist();
+      sendResponse(createSuccessResponse({ blacklist, added: true }));
+    } else {
+      sendResponse(createErrorResponse('Failed to add blacklist item (validation failed or duplicate)'));
+    }
+  } catch (error) {
+    sendResponse(createErrorResponse(ERROR_MESSAGES.BLACKLIST_OPERATION_FAILED));
+  }
+}
+
+/**
+ * Handle remove blacklist item message
+ */
+async function handleRemoveBlacklistItem(itemId, sendResponse) {
+  try {
+    if (!itemId) {
+      return sendResponse(createErrorResponse('Item ID not provided'));
+    }
+    
+    const success = await listManager.removeBlacklistItem(itemId);
+    if (success) {
+      const blacklist = await listManager.getBlacklist();
+      sendResponse(createSuccessResponse({ blacklist, removed: true }));
+    } else {
+      sendResponse(createErrorResponse('Failed to remove blacklist item (not found)'));
+    }
+  } catch (error) {
+    sendResponse(createErrorResponse(ERROR_MESSAGES.BLACKLIST_OPERATION_FAILED));
   }
 }
 

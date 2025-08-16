@@ -186,6 +186,95 @@
         min-width: auto;
       }
     }
+    
+    /* List Item Styles */
+    .list-item {
+      display: flex;
+      align-items: center;
+      gap: 12px;
+      padding: 12px;
+      background: #f8fafc;
+      border: 1px solid #e2e8f0;
+      border-radius: 8px;
+      margin: 8px 0;
+      transition: all 0.2s ease;
+    }
+    
+    .list-item:hover {
+      background: #f1f5f9;
+      border-color: #cbd5e1;
+    }
+    
+    .list-item-content {
+      flex: 1;
+      display: flex;
+      flex-direction: column;
+      gap: 4px;
+    }
+    
+    .list-item-text {
+      font-weight: 600;
+      color: #1e293b;
+      font-family: monospace;
+      background: white;
+      padding: 4px 8px;
+      border-radius: 4px;
+      border: 1px solid #e2e8f0;
+      display: inline-block;
+      max-width: fit-content;
+    }
+    
+    .list-item-meta {
+      display: flex;
+      gap: 12px;
+      font-size: 12px;
+      color: #64748b;
+    }
+    
+    .list-item-tag {
+      background: #e2e8f0;
+      padding: 2px 6px;
+      border-radius: 4px;
+      font-weight: 500;
+    }
+    
+    .list-item-tag.match-exact { background: #dbeafe; color: #1e40af; }
+    .list-item-tag.match-contains { background: #dcfce7; color: #166534; }
+    .list-item-tag.match-regex { background: #fef3c7; color: #92400e; }
+    
+    .list-item-tag.weight-1 { background: #dcfce7; color: #166534; }
+    .list-item-tag.weight-2 { background: #fef3c7; color: #92400e; }
+    .list-item-tag.weight-3 { background: #fecaca; color: #dc2626; }
+    .list-item-tag.weight-4 { background: #ef4444; color: white; }
+    
+    .list-item-tag.locale-ko { background: #e0e7ff; color: #3730a3; }
+    .list-item-tag.locale-en { background: #f3e8ff; color: #6b21a8; }
+    .list-item-tag.locale-all { background: #f1f5f9; color: #475569; }
+    
+    .list-item-actions {
+      display: flex;
+      gap: 8px;
+    }
+    
+    .list-item button {
+      padding: 6px 12px;
+      font-size: 12px;
+      background: #ef4444;
+      color: white;
+      border: 1px solid #dc2626;
+    }
+    
+    .list-item button:hover {
+      background: #dc2626;
+      border-color: #b91c1c;
+    }
+    
+    .list-empty {
+      text-align: center;
+      padding: 24px;
+      color: #64748b;
+      font-style: italic;
+    }
   </style>
 </head>
 <body>
@@ -286,6 +375,31 @@
       </div>
     </div>
   </div>
+  
+  <!-- 피드백 배너 -->
+  <div class="card banner" id="feedbackBanner" style="background: linear-gradient(135deg, #f0fdf4, #dcfce7); border: 1px solid #16a34a;">
+    <div class="banner-content">
+      <div class="banner-icon">💬</div>
+      <div class="banner-text">
+        <h3 class="banner-title" style="color: #15803d;">피드백 및 문제 신고</h3>
+        <p class="banner-desc" style="color: #166534;">
+          BizTone 사용 중 문제가 발생했거나 개선 아이디어가 있으시나요? 여러분의 소중한 피드백을 기다립니다.
+        </p>
+        <div class="banner-tips" style="color: #14532d; background: rgba(255,255,255,0.7);">
+          🔍 <strong>신고 가능한 내용:</strong> 오탐/누락 감지, 변환 품질 문제, UI 버그, 기능 요청 등
+        </div>
+        <div class="banner-buttons">
+          <button type="button" class="btn-tertiary" id="sendFeedback">
+            📧 피드백 보내기
+          </button>
+          <button type="button" class="btn-secondary" id="viewLogs" style="background: #16a34a; color: white; border-color: #16a34a;">
+            📋 로그 확인
+          </button>
+        </div>
+      </div>
+    </div>
+  </div>
+  
   <div class="card">
     <label for="apiKey">OpenAI API Key</label>
     <input id="apiKey" type="password" placeholder="sk-..." autocomplete="off" />
@@ -347,6 +461,103 @@
     
     <div id="domainList">
       <!-- 도메인 목록이 여기에 동적 생성됩니다 -->
+    </div>
+  </div>
+
+  <!-- 화이트리스트 관리 섹션 -->
+  <div class="card" style="margin-top: 20px;">
+    <h3>허용 표현 (화이트리스트)</h3>
+    <p class="muted">화이트리스트에 등록된 표현은 욕설로 감지되지 않습니다. 예: "시발점", "개발자"</p>
+    
+    <div style="margin: 15px 0;">
+      <div class="row" style="align-items: end;">
+        <div style="flex: 2;">
+          <label for="whitelistText">허용할 표현</label>
+          <input id="whitelistText" type="text" placeholder="예: 시발점에서 만나요" />
+        </div>
+        <div style="flex: 1;">
+          <label for="whitelistMatch">매칭 방식</label>
+          <select id="whitelistMatch">
+            <option value="exact">정확히 일치</option>
+            <option value="contains" selected>포함</option>
+            <option value="regex">정규식</option>
+          </select>
+        </div>
+        <div style="flex: 1;">
+          <label for="whitelistLocale">언어</label>
+          <select id="whitelistLocale">
+            <option value="all" selected>모든 언어</option>
+            <option value="ko">한국어</option>
+            <option value="en">영어</option>
+          </select>
+        </div>
+        <div style="flex: 0 0 auto;">
+          <button id="addWhitelistItem">추가</button>
+        </div>
+      </div>
+    </div>
+    
+    <div id="whitelistItems" style="margin-top: 15px;">
+      <!-- 화이트리스트 아이템들이 여기에 동적 생성됩니다 -->
+    </div>
+    
+    <div style="margin-top: 15px; text-align: right;">
+      <button id="exportWhitelist" style="margin-right: 8px; background: #10b981; border-color: #10b981;">JSON 내보내기</button>
+      <button id="importWhitelist">JSON 가져오기</button>
+      <input type="file" id="whitelistFileInput" accept=".json" style="display: none;" />
+    </div>
+  </div>
+
+  <!-- 블랙리스트 관리 섹션 -->
+  <div class="card" style="margin-top: 20px;">
+    <h3>금지 표현 (블랙리스트)</h3>
+    <p class="muted">블랙리스트에 등록된 표현은 위험도 점수가 추가됩니다. 조직 내 금지 단어를 추가하세요.</p>
+    
+    <div style="margin: 15px 0;">
+      <div class="row" style="align-items: end;">
+        <div style="flex: 2;">
+          <label for="blacklistText">금지할 표현</label>
+          <input id="blacklistText" type="text" placeholder="예: 빨리 처리해" />
+        </div>
+        <div style="flex: 1;">
+          <label for="blacklistMatch">매칭 방식</label>
+          <select id="blacklistMatch">
+            <option value="exact">정확히 일치</option>
+            <option value="contains" selected>포함</option>
+            <option value="regex">정규식</option>
+          </select>
+        </div>
+        <div style="flex: 1;">
+          <label for="blacklistWeight">위험도</label>
+          <select id="blacklistWeight">
+            <option value="1">낮음 (+1)</option>
+            <option value="2" selected>보통 (+2)</option>
+            <option value="3">높음 (+3)</option>
+            <option value="4">매우높음 (+4)</option>
+          </select>
+        </div>
+        <div style="flex: 1;">
+          <label for="blacklistLocale">언어</label>
+          <select id="blacklistLocale">
+            <option value="all" selected>모든 언어</option>
+            <option value="ko">한국어</option>
+            <option value="en">영어</option>
+          </select>
+        </div>
+        <div style="flex: 0 0 auto;">
+          <button id="addBlacklistItem">추가</button>
+        </div>
+      </div>
+    </div>
+    
+    <div id="blacklistItems" style="margin-top: 15px;">
+      <!-- 블랙리스트 아이템들이 여기에 동적 생성됩니다 -->
+    </div>
+    
+    <div style="margin-top: 15px; text-align: right;">
+      <button id="exportBlacklist" style="margin-right: 8px; background: #10b981; border-color: #10b981;">JSON 내보내기</button>
+      <button id="importBlacklist">JSON 가져오기</button>
+      <input type="file" id="blacklistFileInput" accept=".json" style="display: none;" />
     </div>
   </div>
 

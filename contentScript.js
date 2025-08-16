@@ -1605,14 +1605,30 @@
     // Quick local assessment (no API calls for real-time)
     const quickRisk = calculateBasicRiskScore(normalizedText);
     
+    // Get enhanced assessment from background for whitelist/blacklist check
+    safeSendMessage({
+      type: "BIZTONE_ADVANCED_RISK", 
+      text: normalizedText
+    }, async (response) => {
+      let finalRisk;
+      if (response && response.ok && response.result) {
+        finalRisk = response.result;
+      } else {
+        finalRisk = quickRisk;
+      }
+      
+      // Show badge based on final assessment
+      if (finalRisk.score > 0 && !finalRisk.whitelisted) {
+        showRealtimeBadge(element, finalRisk.score, finalRisk.riskLevel || 'MEDIUM');
+      } else {
+        // Use delayed removal to prevent flickering during fast typing
+        removeRealtimeBadge(element, false);
+      }
+    });
     
-    // Show badge only if there's some risk
-    // Use lower threshold for real-time to give early warning
-    if (quickRisk.score > 0.5 && !quickRisk.whitelisted) {
-      showRealtimeBadge(element, quickRisk.score, quickRisk.riskFactors);
-    } else {
-      // Use delayed removal to prevent flickering during fast typing
-      removeRealtimeBadge(element, false);
+    // Show immediate badge based on quick assessment while waiting for enhanced result
+    if (quickRisk.score > 0.5) {
+      showRealtimeBadge(element, quickRisk.score, 'CHECKING');
     }
   }
 
@@ -1637,12 +1653,11 @@
       debounceMs = 50; // Almost instant for clear profanity
     }
     
-    
     // Set new debounce timer
     state.realtimeDebounce = setTimeout(() => {
-      const startTime = performance.now();
-      handleRealtimeDetection(element, text);
-      const endTime = performance.now();
+      // Get current text from element instead of using cached text
+      const currentText = element.value || element.textContent || element.innerText || "";
+      handleRealtimeDetection(element, currentText);
       
       // Detection completed
       
